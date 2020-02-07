@@ -129,7 +129,7 @@ class BT2GraphThread(QThread):
 
 # QTableView which displays event data
 class SinkTableView(QTableView):
-    def __init__(self, graph_thread, parent=None):
+    def __init__(self, event_signal, parent=None):
         super(SinkTableView, self).__init__(parent)
         self.setWindowTitle("Sink data")
 
@@ -148,10 +148,7 @@ class SinkTableView(QTableView):
             model.appendRow([QStandardItem(name), QStandardItem(timestamp)])
             self.scrollToBottom()
 
-        # Do note: event_signal is static, but it has to be accessed through instance
-        # (via class instance) in order to be "bound" (expose the .connect() method)
-        #
-        graph_thread.event_signal.connect(update_gui)
+        event_signal.connect(update_gui)
 
 # GUI Application
 def main():
@@ -163,7 +160,10 @@ def main():
     #
     graph_thread = BT2GraphThread()
 
-    tableView = SinkTableView(graph_thread)
+    # Do note: event_signal is static, but it has to be accessed through instance
+    # (via class instance) in order to be "bound" (expose the .connect() method)
+    #
+    tableView = SinkTableView(graph_thread.event_signal)
 
     # Start graph thread
     graph_thread.start(QThread.LowPriority)
