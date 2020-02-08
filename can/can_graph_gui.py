@@ -153,8 +153,6 @@ class BT2GraphThread(QThread):
 
     def run(self):
         # Run graph
-        #for i in range(0,100):
-        #    self._graph.run_once()
         self._graph.run()
 
 
@@ -186,7 +184,7 @@ class EventTableModel(QAbstractTableModel):
     def data(self, index, role=Qt.DisplayRole):
         if role == Qt.DisplayRole and index.isValid() and self.data:
             # This is where we return data to be displayed
-            return self.data[index.row()][index.column()]
+            return str(self.data[index.row()][index.column()])
 
         return None
 
@@ -206,7 +204,7 @@ class EventTableModel(QAbstractTableModel):
     def fetchMore(self, index):
         itemsToFetch = len(self.data) - self.data_rowCount
 
-        self.beginInsertRows(QModelIndex(), self.data_rowCount, self.data_rowCount + itemsToFetch)
+        self.beginInsertRows(QModelIndex(), self.data_rowCount+1, self.data_rowCount + itemsToFetch)
         self.data_rowCount += itemsToFetch
         self.endInsertRows()
 
@@ -221,7 +219,7 @@ def main():
     graph_thread = BT2GraphThread(buffer)
 
     # Data model
-    model = QStandardItemModel()
+    model = EventTableModel(buffer)
     model.setHorizontalHeaderLabels(buffer.dtype.names)
 
     # Table window
@@ -233,7 +231,7 @@ def main():
     tableView.verticalHeader().setDefaultSectionSize(10)    # row height
 
     # Start graph thread
-    graph_thread.start(QThread.LowPriority)
+    graph_thread.start(QThread.LowestPriority)
 
     # Start GUI event loop
     tableView.show()
