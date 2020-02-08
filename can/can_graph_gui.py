@@ -82,7 +82,6 @@ class SinkEmitter(bt2._UserSinkComponent):
 #
 # We're using the QThread subclassing approach, check gotchas at
 # https://doc.qt.io/qt-5/qthread.html
-#
 class BT2GraphThread(QThread):
 
     # Signal that will be connected to the
@@ -110,7 +109,6 @@ class BT2GraphThread(QThread):
 
         # Do note: event_signal is static, but it has to be accessed through instance
         # (via self.) in order to be "bound" (expose the .emit() method)
-        #
         graph_sink = graph.add_component(SinkEmitter, 'sink', obj=self.event_signal)
 
         # Connect components together
@@ -127,43 +125,36 @@ class BT2GraphThread(QThread):
         self._graph.run()
 
 
-# QTableView which displays event data
-class SinkTableView(QTableView):
-    def __init__(self, event_signal, parent=None):
-        super(SinkTableView, self).__init__(parent)
-        self.setWindowTitle("Sink data")
-
-        # Data model
-        model = QStandardItemModel()
-        model.setHorizontalHeaderLabels(['name', 'timestamp'])
-        self.setModel(model)
-
-        self.setEditTriggers(QTableWidget.NoEditTriggers)  # read-only
-        self.verticalHeader().setDefaultSectionSize(10)    # row height
-
-        # Provide and connect the GUI update slot
-        # https://www.riverbankcomputing.com/static/Docs/PyQt5/signals_slots.html
-        @pyqtSlot(str, str)
-        def update_gui(name, timestamp):
-            model.appendRow([QStandardItem(name), QStandardItem(timestamp)])
-            self.scrollToBottom()
-
-        event_signal.connect(update_gui)
-
 # GUI Application
 def main():
     app = QApplication([])
 
-    # Create graph thread
-    # Has to be instantiated _outside_ the constructor of the widget (QObject derivative),
-    # otherwise it hijacks main thread.
-    #
+    # BT2 Graph thread
     graph_thread = BT2GraphThread()
 
+    # Data model
+    model = QStandardItemModel()
+    model.setHorizontalHeaderLabels(['name', 'timestamp'])
+
+    # Table window
+    tableView = QTableView()
+    tableView.setWindowTitle("Sink data")
+    tableView.setModel(model)
+
+    tableView.setEditTriggers(QTableWidget.NoEditTriggers)  # read-only
+    tableView.verticalHeader().setDefaultSectionSize(10)    # row height
+
+    # Provide slot that updates data model & triggers GUI update
+    # https://www.riverbankcomputing.com/static/Docs/PyQt5/signals_slots.html
+    @pyqtSlot(str, str)
+    def update_gui(name, timestamp):
+        model.appendRow( (QStandardItem(name), QStandardItem(timestamp)) )
+        tableView.scrollToBottom()
+
+    # Connect sink event signal to slot
     # Do note: event_signal is static, but it has to be accessed through instance
     # (via class instance) in order to be "bound" (expose the .connect() method)
-    #
-    tableView = SinkTableView(graph_thread.event_signal)
+    graph_thread.event_signal.connect(update_gui)
 
     # Start graph thread
     graph_thread.start(QThread.LowPriority)
