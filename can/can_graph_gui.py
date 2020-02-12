@@ -113,15 +113,23 @@ class EventBufferSink(bt2._UserSinkComponent):
 
 # Graph processing thread
 #
-# We're using the QThread subclassing approach, check gotchas at
+# Check Qt multithreading gotchas at
 # https://doc.qt.io/qt-5/qthread.html
 # https://mayaposch.wordpress.com/2011/11/01/how-to-really-truly-use-qthreads-the-full-explanation/
+# https://www.kdab.com/wp-content/uploads/stories/slides/DD12/Multithreading_Presentation.pdf
 #
-class BT2GraphThread(QThread):
+# IDEs have only support for QtThreads
+# https://youtrack.jetbrains.com/issue/PY-24162
+# https://intellij-support.jetbrains.com/hc/en-us/community/posts/203420404-Pycharm-debugger-not-stopping-on-QThread-breakpoints
+#
+class BT2GraphWorker(QObject):
 
-    def __init__(self, buffer, parent=None):
-        super(BT2GraphThread, self).__init__(parent)
+    def __init__(self, buffer):
+        super().__init__()
+        self._buffer = buffer
 
+    @pyqtSlot()
+    def work(self):
         global CANSource_data_path, CANSource_dbc_path
         global plugins
 
@@ -140,7 +148,7 @@ class BT2GraphThread(QThread):
 
         # Do note: event_signal is static, but it has to be accessed through instance
         # (via self.) in order to be "bound" (expose the .emit() method)
-        graph_sink = graph.add_component(EventBufferSink, 'sink', obj=buffer)
+        graph_sink = graph.add_component(EventBufferSink, 'sink', obj=self._buffer)
 
         # Connect components together
         graph.connect_ports(
@@ -148,12 +156,9 @@ class BT2GraphThread(QThread):
             list(graph_sink.input_ports.values())[0]
         )
 
-    def __del__(self):
-        self.wait()
-
-    def run(self):
         # Run graph
-        self._graph.run()
+        while True:
+            self._graph.run_once()
 
 
 # Data model that uses fetchMore mechanism for on-demand row loading.
@@ -215,8 +220,13 @@ def main():
     # Event buffer
     buffer = EventBuffer(event_block_sz=500, event_dtype=np.dtype( [('timestamp', np.int32), ('name', 'U25')] ))
 
-    # BT2 Graph thread
-    graph_thread = BT2GraphThread(buffer)
+    # BT2 Graph worker + QThread thread manager
+    bt2_thread = QThread()
+    bt2_thread.setObjectName("bt2")
+
+    bt2_worker = BT2GraphWorker(buffer)
+    bt2_worker.moveToThread(bt2_thread)
+    bt2_thread.started.connect(bt2_worker.work)  # QThread will start the work() slot in new thread
 
     # Data model
     model = EventTableModel(buffer)
@@ -231,7 +241,7 @@ def main():
     tableView.verticalHeader().setDefaultSectionSize(10)    # row height
 
     # Start graph thread
-    graph_thread.start(QThread.LowestPriority)
+    bt2_thread.start(QThread.LowestPriority)
 
     # Start GUI event loop
     tableView.show()
