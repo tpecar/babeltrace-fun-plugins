@@ -14,6 +14,7 @@ LIBBABELTRACE2_PLUGIN_PROVIDER_DIR = [babeltrace2 build folder]/src/python-plugi
 import bt2
 import numpy as np
 
+import time
 import argparse
 
 from PyQt5.Qt import *
@@ -85,31 +86,55 @@ class EventBufferSink(bt2._UserSinkComponent):
         self._it = self._create_message_iterator(self._port)
 
     def _user_consume(self):
-        # Consume one message and print it.
         msg = next(self._it)
 
-        handler = {
-            bt2._StreamBeginningMessageConst :
-                lambda : "Stream begin",
-            bt2._PacketBeginningMessageConst :
-                lambda : "Packet begin",
+        if type(msg) == bt2._EventMessageConst:
+            # Save event to buffer
+            self._buffer.append((msg.default_clock_snapshot.value, msg.event.name))
 
-            bt2._EventMessageConst :
-                # Save event to buffer
-                lambda : self._buffer.append( (msg.default_clock_snapshot.value, msg.event.name) ),
 
-            bt2._PacketEndMessageConst:
-                lambda : "Packet end",
-            bt2._StreamEndMessageConst:
-                lambda : "Stream end"
-        }
-        try:
-            msg = handler[type(msg)]()
-            if msg:
-                print(msg)
-        except KeyError:
-            raise RuntimeError("Unhandled message type", type(msg))
+# Graph thread manager - or how to enter Signal / Slot / QtEvent hell
+# -- Has to be started in GUI thread. --
+#
+# The idea is that the graph thread emits a signal through a BlockingQueuedConnection, which causes it to block,
+# allowing the transition back to the main (GUI) thread, which will process all current events and the
+# graph thread event, allowing it to be scheduled in the future.
+#
+# More info
+#   https://doc.qt.io/qt-5/eventsandfilters.html
+#   https://doc.qt.io/qt-5/qabstracteventdispatcher.html
+#   https://doc.qt.io/qt-5/qcoreapplication.html
+#
+#   https://doc.qt.io/qt-5/signalsandslots.html
+#   https://doc.qt.io/qt-5/qt.html#ConnectionType-enum
+#   https://woboq.com/blog/how-qt-signals-slots-work-part3-queuedconnection.html
+#
+#   PyQt5-5.14.2.dev2002051759/qpy/QtCore/qpycore_pyqtboundsignal.cpp
+#
+class BT2GraphThreadManager(QObject):
 
+    @pyqtSlot()
+    def wake_graph_thread(self):
+        # Invoked from the main thread event queue (presumably when other events are processed).
+        # Since the signal-slot connection is BlockingQueuedConnection, the sole fact that slot was invoked is enough
+        # to reschedule the GUI thread.
+        pass
+
+    def __init__(
+            self,
+            buffer,
+            thread_time=0.05 # Time in s the graph thread can process before being blocked
+    ):
+        super().__init__()
+
+        self.thread = QThread()
+
+        self.worker = BT2GraphWorker(buffer, self.wake_graph_thread, thread_time)
+        self.worker.moveToThread(self.thread)
+        self.thread.started.connect(self.worker.work)   # QThread will start the work() slot in new thread
+
+    def start(self):
+        self.thread.start()
 
 # Graph processing thread
 #
@@ -124,9 +149,15 @@ class EventBufferSink(bt2._UserSinkComponent):
 #
 class BT2GraphWorker(QObject):
 
-    def __init__(self, buffer):
+    _blocking_signal = pyqtSignal()
+
+    def __init__(self, buffer, wake_slot, thread_time):
         super().__init__()
         self._buffer = buffer
+        self._running = True
+        self._thread_time = thread_time
+
+        self._blocking_signal.connect(wake_slot, type=Qt.BlockingQueuedConnection)
 
     @pyqtSlot()
     def work(self):
@@ -156,9 +187,26 @@ class BT2GraphWorker(QObject):
             list(graph_sink.input_ports.values())[0]
         )
 
+        # Timer that will periodically yield the graph processing thread for better UI responsiveness
+        #
+        # While we have QTimers and all that jazz, both python threading and Qt's event loop mechanism seem to have
+        # a very hard time interrupting a fast loop that jumps into native code, so we implement it manually.
+        #
+        self._last_wait_time = time.clock_gettime(time.CLOCK_PROCESS_CPUTIME_ID)
+
         # Run graph
-        while True:
+        while self._running:
             self._graph.run_once()
+
+            if time.clock_gettime(time.CLOCK_PROCESS_CPUTIME_ID) - self._last_wait_time > self._thread_time:
+                # Block graph thread
+                self._blocking_signal.emit()
+                # Reset timer when we return
+                self._last_wait_time = time.clock_gettime(time.CLOCK_PROCESS_CPUTIME_ID)
+
+    @pyqtSlot()
+    def stop(self):
+        self._running = False
 
 
 # Data model that uses fetchMore mechanism for on-demand row loading.
@@ -174,59 +222,61 @@ class EventTableModel(QAbstractTableModel):
     def __init__(self, data_obj=None, parent=None):
         super(QAbstractTableModel, self).__init__(parent)
 
-        self.data = data_obj
-        self.data_headers = None
+        self._data = data_obj
+        self._data_headers = None
 
-        self.data_columnCount = 0   # Displayed column count
-        self.data_rowCount = 0      # Displayed row count
+        self._data_columnCount = 0   # Displayed column count
+        self._data_rowCount = 0      # Displayed row count
 
     def rowCount(self, parent=QModelIndex()):
-        return self.data_rowCount if not parent.isValid() else 0
+        return self._data_rowCount if not parent.isValid() else 0
 
     def columnCount(self, parent=QModelIndex()):
-        return self.data_columnCount if not parent.isValid() else 0
+        return self._data_columnCount if not parent.isValid() else 0
 
     def data(self, index, role=Qt.DisplayRole):
-        if role == Qt.DisplayRole and index.isValid() and self.data:
+        if role == Qt.DisplayRole and index.isValid() and self._data:
             # This is where we return data to be displayed
-            return str(self.data[index.row()][index.column()])
+            return str(self._data[index.row()][index.column()])
 
         return None
 
     def setHorizontalHeaderLabels(self, headers):
-        self.data_headers = headers
-        self.data_columnCount = len(headers)
+        self._data_headers = headers
+        self._data_columnCount = len(headers)
 
     def headerData(self, section, orientation, role=Qt.DisplayRole):
         if role == Qt.DisplayRole:
-            if orientation == Qt.Horizontal and section < len(self.data_headers):
-                return self.data_headers[section]
+            if orientation == Qt.Horizontal and section < len(self._data_headers):
+                return self._data_headers[section]
         return None
 
     def canFetchMore(self, index):
-        return self.data_rowCount < len(self.data)
+        return self._data_rowCount < len(self._data)
 
     def fetchMore(self, index):
-        itemsToFetch = len(self.data) - self.data_rowCount
+        itemsToFetch = len(self._data) - self._data_rowCount
 
-        self.beginInsertRows(QModelIndex(), self.data_rowCount+1, self.data_rowCount + itemsToFetch)
-        self.data_rowCount += itemsToFetch
+        self.beginInsertRows(QModelIndex(), self._data_rowCount + 1, self._data_rowCount + itemsToFetch)
+        self._data_rowCount += itemsToFetch
         self.endInsertRows()
+
+# Reference to BT2GraphThreadManager instance needs to be global to survive main exit, which happens before
+# aboutToQuit is called
+#
+# TODO: there still seems to be a race condition during program close
+
+# Event buffer
+buffer = EventBuffer(event_block_sz=500, event_dtype=np.dtype( [('timestamp', np.int32), ('name', 'U25')] ))
+
+# Graph thread machinery
+graph_thread = BT2GraphThreadManager(buffer)
 
 # GUI Application
 def main():
+    global graph_thread
+
     app = QApplication([])
-
-    # Event buffer
-    buffer = EventBuffer(event_block_sz=500, event_dtype=np.dtype( [('timestamp', np.int32), ('name', 'U25')] ))
-
-    # BT2 Graph worker + QThread thread manager
-    bt2_thread = QThread()
-    bt2_thread.setObjectName("bt2")
-
-    bt2_worker = BT2GraphWorker(buffer)
-    bt2_worker.moveToThread(bt2_thread)
-    bt2_thread.started.connect(bt2_worker.work)  # QThread will start the work() slot in new thread
 
     # Data model
     model = EventTableModel(buffer)
@@ -240,8 +290,9 @@ def main():
     tableView.setEditTriggers(QTableWidget.NoEditTriggers)  # read-only
     tableView.verticalHeader().setDefaultSectionSize(10)    # row height
 
-    # Start graph thread
-    bt2_thread.start(QThread.LowestPriority)
+    # Configure stop signal and start graph thread
+    app.aboutToQuit.connect(graph_thread.worker.stop)  # Stop processing the graph if gui quit
+    graph_thread.start()
 
     # Start GUI event loop
     tableView.show()
