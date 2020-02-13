@@ -116,8 +116,9 @@ class BT2GraphThreadManager(QObject):
     @pyqtSlot()
     def wake_graph_thread(self):
         # Invoked from the main thread event queue (presumably when other events are processed).
+        #
         # Since the signal-slot connection is BlockingQueuedConnection, the sole fact that slot was invoked is enough
-        # to reschedule the GUI thread.
+        # to reschedule the graph thread.
         pass
 
     def __init__(
