@@ -125,7 +125,7 @@ class BT2GraphThreadManager(QObject):
             self,
             buffer,
             app,
-            thread_time=0.05 # Time in s the graph thread can process before being blocked
+            thread_time=0.025 # Time in s the graph thread can process before being blocked
     ):
         super().__init__()
 
@@ -158,13 +158,13 @@ class BT2GraphThreadManager(QObject):
 # Graph processing thread
 #
 # Check Qt multithreading gotchas at
-# https://doc.qt.io/qt-5/qthread.html
-# https://mayaposch.wordpress.com/2011/11/01/how-to-really-truly-use-qthreads-the-full-explanation/
-# https://www.kdab.com/wp-content/uploads/stories/slides/DD12/Multithreading_Presentation.pdf
+#   https://doc.qt.io/qt-5/qthread.html
+#   https://mayaposch.wordpress.com/2011/11/01/how-to-really-truly-use-qthreads-the-full-explanation/
+#   https://www.kdab.com/wp-content/uploads/stories/slides/DD12/Multithreading_Presentation.pdf
 #
 # IDEs have only support for QtThreads
-# https://youtrack.jetbrains.com/issue/PY-24162
-# https://intellij-support.jetbrains.com/hc/en-us/community/posts/203420404-Pycharm-debugger-not-stopping-on-QThread-breakpoints
+#   https://youtrack.jetbrains.com/issue/PY-24162
+#   https://intellij-support.jetbrains.com/hc/en-us/community/posts/203420404-Pycharm-debugger-not-stopping-on-QThread-breakpoints
 #
 class BT2GraphThread(QThread):
 
@@ -285,51 +285,92 @@ class EventTableModel(QAbstractTableModel):
 
 # MainWindow
 #
-# We use it so that we can stop the graph thread from its closeEvent handler.
-#
-# Due to the peculiar nature of the graph thread blocking itself before switching to main thread, we cannot use the
-# aboutToQuit signal, which gets emitted when the event loop (on which we depend to unblock to resume the graph thread)
-# stops.
-#
 class MainWindow(QMainWindow):
 
-    def __init__(self, graph_thread):
+    def __init__(self, buffer, model, graph_thread):
         super().__init__()
         self._graph_thread = graph_thread
+        self._buffer = buffer
+        self._model = model
 
+        self.setWindowTitle("Babeltrace2 GUI demo")
+
+        # Table view
+        self._tableView = QTableView()
+        self._tableView.setWindowTitle("Sink data")
+        self._tableView.setModel(model)
+
+        self._tableView.setEditTriggers(QTableWidget.NoEditTriggers)    # read-only
+        self._tableView.verticalHeader().setDefaultSectionSize(10)      # row height
+        self._tableView.horizontalHeader().setStretchLastSection(True)  # last column resizes to widget width
+
+        # Statistics label
+        self._statLabel = QLabel("Events (processed/loaded): - / -")
+
+        # Refresh checkbox
+        self._followCheckbox = QCheckBox("Follow events")
+        self._followCheckbox.setChecked(True)
+
+        # Layout
+        self._layout = QGridLayout()
+        self._layout.addWidget(self._tableView, 0, 0, 1, 2) # See https://doc.qt.io/qt-5/qgridlayout.html#addWidget-2
+        self._layout.addWidget(self._statLabel, 1, 0)
+        self._layout.addWidget(self._followCheckbox, 1, 1, 1, 1, Qt.AlignRight)
+
+        self._mainWidget = QWidget()
+        self._mainWidget.setLayout(self._layout)
+
+        self.setCentralWidget(self._mainWidget)
+
+    # Close event handler
+    #
+    # We use it so that we can stop the graph thread.
+    #
+    # Due to the peculiar nature of the graph thread blocking itself before switching to main thread, we cannot use the
+    # aboutToQuit signal, which gets emitted when the event loop (on which we depend to unblock to resume the graph thread)
+    # stops.
+    #
     def closeEvent(self, event):
         self._graph_thread.stop()
 
+    # Timer handler, provided by QObject
+    # https://doc.qt.io/qt-5/qtimer.html#alternatives-to-qtimer
+    @pyqtSlot()
+    def timerEvent(self, QTimerEvent):
+
+        # Statistics
+        self._statLabel.setText(f"Events (processed/loaded): {len(self._buffer)} / {self._model.rowCount()}")
+
+        # Force the view to call canFetchMore / fetchMore initially
+        if not self._model.rowCount():
+            self._model.modelReset.emit()
+
+        # Follow events
+        if self._followCheckbox.isChecked():
+            # The following could be achieved similarly with self._tableView.scrollToBottom(), but that method has
+            # issues with panning - rows appear to "bounce" and it's hard to look at the output
+            #
+            self._tableView.scrollTo(self._model.index(self._model.rowCount()-1, 0), QAbstractItemView.PositionAtBottom)
 
 # GUI Application
 def main():
     app = QApplication([])
 
     # Event buffer
-    buffer = EventBuffer(event_block_sz=500, event_dtype=np.dtype([('timestamp', np.int32), ('name', 'U25')]))
+    buffer = EventBuffer(event_block_sz=500, event_dtype=np.dtype([('timestamp', np.int32), ('name', 'U35')]))
 
     # Data model
     model = EventTableModel(buffer)
     model.setHorizontalHeaderLabels(buffer.dtype.names)
 
-    # Graph thread machinery
+    # Graph thread
     graph_thread = BT2GraphThreadManager(buffer, app)
-
-    # Table window
-    tableView = QTableView()
-    tableView.setWindowTitle("Sink data")
-    tableView.setModel(model)
-
-    tableView.setEditTriggers(QTableWidget.NoEditTriggers)  # read-only
-    tableView.verticalHeader().setDefaultSectionSize(10)    # row height
-
-    # Start graph thread
     graph_thread.start()
 
-    # MainWindow
-    mainWindow = MainWindow(graph_thread)
-    mainWindow.setCentralWidget(tableView)
+    # Main window
+    mainWindow = MainWindow(buffer, model, graph_thread)
     mainWindow.show()
+    mainWindow.startTimer(100) # Update stats & refresh interval in ms
 
     # Start GUI event loop
     app.exec_()
@@ -343,15 +384,15 @@ if __name__ == "__main__":
              "Alternatively, set BABELTRACE_PLUGIN_PATH (non-recursive!)"
     )
     parser.add_argument(
-        "--plugin-path", type=str, default="./python/",
+        "--plugin-path", type=str, default="../../python/",
         help="Path to 'bt_user_can.(so|py)' plugin"
     )
     parser.add_argument(
-        "--CANSource-data-path", type=str, default="./test.data",
+        "--CANSource-data-path", type=str, default="../../test.data",
         help="Path to test data required by bt_user_can"
     )
     parser.add_argument(
-        "--CANSource-dbc-path", type=str, default="./database.dbc",
+        "--CANSource-dbc-path", type=str, default="../../database.dbc",
         help="Path to DBC (CAN Database) required by bt_user_can"
     )
 
