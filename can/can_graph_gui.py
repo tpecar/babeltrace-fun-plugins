@@ -18,8 +18,8 @@ import time
 import argparse
 
 from PyQt5.Qt import *
-from PyQt5.QtGui import *
 from PyQt5.QtWidgets import *
+
 
 # Event buffer, implemented as a list of fixed size buffers.
 #
@@ -94,7 +94,7 @@ class EventBufferSink(bt2._UserSinkComponent):
 
 
 # Graph thread manager - or how to enter Signal / Slot / QtEvent hell
-# -- Has to be started in GUI thread. --
+# -- Has to be instantiated in GUI thread. --
 #
 # The idea is that the graph thread emits a signal through a BlockingQueuedConnection, which causes it to block,
 # allowing the transition back to the main (GUI) thread, which will process all current events and the
@@ -109,7 +109,7 @@ class EventBufferSink(bt2._UserSinkComponent):
 #   https://doc.qt.io/qt-5/qt.html#ConnectionType-enum
 #   https://woboq.com/blog/how-qt-signals-slots-work-part3-queuedconnection.html
 #
-#   PyQt5-5.14.2.dev2002051759/qpy/QtCore/qpycore_pyqtboundsignal.cpp
+#   PyQt5-5.xx.x.devX/qpy/QtCore/qpycore_pyqtboundsignal.cpp
 #
 class BT2GraphThreadManager(QObject):
 
@@ -117,25 +117,43 @@ class BT2GraphThreadManager(QObject):
     def wake_graph_thread(self):
         # Invoked from the main thread event queue (presumably when other events are processed).
         #
-        # Since the signal-slot connection is BlockingQueuedConnection, the sole fact that slot was invoked is enough
-        # to reschedule the graph thread.
+        # Since the signal-slot connection is a BlockingQueuedConnection, the sole fact that the slot was invoked is
+        # enough to reschedule the graph thread.
         pass
 
     def __init__(
             self,
             buffer,
+            app,
             thread_time=0.05 # Time in s the graph thread can process before being blocked
     ):
         super().__init__()
 
-        self.thread = QThread()
-
-        self.worker = BT2GraphWorker(buffer, self.wake_graph_thread, thread_time)
-        self.worker.moveToThread(self.thread)
-        self.thread.started.connect(self.worker.work)   # QThread will start the work() slot in new thread
+        self.thread = BT2GraphThread(buffer, self.wake_graph_thread, thread_time)
+        self.app = app
 
     def start(self):
         self.thread.start()
+
+    def stop(self):
+        # While modifying worker state (running in graph thread) from main thread is not nice,
+        # it is safe, since the graph thread only reads the affected variable state
+        self.thread.stop()
+
+        # Wait for the thread cleanup to finish
+        while not self.thread.wait(10):
+            # This is to handle the case where the graph thread is suspended and its BlockingQueuedConnection
+            # signal isn't handled yet, when the main thread starts waiting (blocking) on the graph thread to finish,
+            # essentially causing a deadlock (if we would wait indefinitely).
+            #
+            # So we deliberately handle all queued events here, which will also handle the slot that unblocks the graph
+            # thread.
+            #
+            # Do note that even doing processEvents() before wait does not guarantee that the slot will be handled -
+            # it might arrive after processEvents invocation and before wait.
+            #
+            self.app.processEvents()
+
 
 # Graph processing thread
 #
@@ -148,7 +166,7 @@ class BT2GraphThreadManager(QObject):
 # https://youtrack.jetbrains.com/issue/PY-24162
 # https://intellij-support.jetbrains.com/hc/en-us/community/posts/203420404-Pycharm-debugger-not-stopping-on-QThread-breakpoints
 #
-class BT2GraphWorker(QObject):
+class BT2GraphThread(QThread):
 
     _blocking_signal = pyqtSignal()
 
@@ -160,10 +178,11 @@ class BT2GraphWorker(QObject):
 
         self._blocking_signal.connect(wake_slot, type=Qt.BlockingQueuedConnection)
 
-    @pyqtSlot()
-    def work(self):
+    def run(self):
         global CANSource_data_path, CANSource_dbc_path
         global plugins
+
+        print("Graph thread start.")
 
         # Load required components from plugins
         source = plugins['can'].source_component_classes['CANSource']
@@ -193,19 +212,20 @@ class BT2GraphWorker(QObject):
         # While we have QTimers and all that jazz, both python threading and Qt's event loop mechanism seem to have
         # a very hard time interrupting a fast loop that jumps into native code, so we implement it manually.
         #
-        self._last_wait_time = time.clock_gettime(time.CLOCK_PROCESS_CPUTIME_ID)
+        last_wait_time = time.clock_gettime(time.CLOCK_PROCESS_CPUTIME_ID)
 
         # Run graph
         while self._running:
             self._graph.run_once()
 
-            if time.clock_gettime(time.CLOCK_PROCESS_CPUTIME_ID) - self._last_wait_time > self._thread_time:
+            if time.clock_gettime(time.CLOCK_PROCESS_CPUTIME_ID) - last_wait_time > self._thread_time:
                 # Block graph thread
                 self._blocking_signal.emit()
                 # Reset timer when we return
-                self._last_wait_time = time.clock_gettime(time.CLOCK_PROCESS_CPUTIME_ID)
+                last_wait_time = time.clock_gettime(time.CLOCK_PROCESS_CPUTIME_ID)
 
-    @pyqtSlot()
+        print("Graph thread done.")
+
     def stop(self):
         self._running = False
 
@@ -215,13 +235,13 @@ class BT2GraphWorker(QObject):
 # More info on
 #   https://doc.qt.io/qt-5/qabstracttablemodel.html
 #   https://sateeshkumarb.wordpress.com/2012/04/01/paginated-display-of-table-data-in-pyqt/
-#   /examples/itemviews/fetchmore.py
-#   /examples/itemviews/storageview.py
-#   /examples/multimediawidgets/player.py
+#   PyQt5-5.xx.x.devX/examples/itemviews/fetchmore.py
+#   PyQt5-5.xx.x.devX/examples/itemviews/storageview.py
+#   PyQt5-5.xx.x.devX/examples/multimediawidgets/player.py
 #
 class EventTableModel(QAbstractTableModel):
     def __init__(self, data_obj=None, parent=None):
-        super(QAbstractTableModel, self).__init__(parent)
+        super().__init__()
 
         self._data = data_obj
         self._data_headers = None
@@ -262,26 +282,38 @@ class EventTableModel(QAbstractTableModel):
         self._data_rowCount += itemsToFetch
         self.endInsertRows()
 
-# Reference to BT2GraphThreadManager instance needs to be global to survive main exit, which happens before
-# aboutToQuit is called
+
+# MainWindow
 #
-# TODO: there still seems to be a race condition during program close
+# We use it so that we can stop the graph thread from its closeEvent handler.
+#
+# Due to the peculiar nature of the graph thread blocking itself before switching to main thread, we cannot use the
+# aboutToQuit signal, which gets emitted when the event loop (on which we depend to unblock to resume the graph thread)
+# stops.
+#
+class MainWindow(QMainWindow):
 
-# Event buffer
-buffer = EventBuffer(event_block_sz=500, event_dtype=np.dtype( [('timestamp', np.int32), ('name', 'U25')] ))
+    def __init__(self, graph_thread):
+        super().__init__()
+        self._graph_thread = graph_thread
 
-# Graph thread machinery
-graph_thread = BT2GraphThreadManager(buffer)
+    def closeEvent(self, event):
+        self._graph_thread.stop()
+
 
 # GUI Application
 def main():
-    global graph_thread
-
     app = QApplication([])
+
+    # Event buffer
+    buffer = EventBuffer(event_block_sz=500, event_dtype=np.dtype([('timestamp', np.int32), ('name', 'U25')]))
 
     # Data model
     model = EventTableModel(buffer)
     model.setHorizontalHeaderLabels(buffer.dtype.names)
+
+    # Graph thread machinery
+    graph_thread = BT2GraphThreadManager(buffer, app)
 
     # Table window
     tableView = QTableView()
@@ -291,13 +323,17 @@ def main():
     tableView.setEditTriggers(QTableWidget.NoEditTriggers)  # read-only
     tableView.verticalHeader().setDefaultSectionSize(10)    # row height
 
-    # Configure stop signal and start graph thread
-    app.aboutToQuit.connect(graph_thread.worker.stop)  # Stop processing the graph if gui quit
+    # Start graph thread
     graph_thread.start()
 
+    # MainWindow
+    mainWindow = MainWindow(graph_thread)
+    mainWindow.setCentralWidget(tableView)
+    mainWindow.show()
+
     # Start GUI event loop
-    tableView.show()
     app.exec_()
+    print("Done.")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
