@@ -6,7 +6,7 @@ import bt2
 import argparse
 
 
-def load_plugins(system_plugin_path, plugin_path):
+def load_plugins(system_plugin_path, plugin_path, verbose=True):
     """
     Loads system & user plugins and returns them as an unified dict
 
@@ -22,6 +22,28 @@ def load_plugins(system_plugin_path, plugin_path):
     assert system_plugins, "No system plugins found!"
     assert user_plugins, "No user plugins found!"
 
+    if verbose:
+        def describe_plugins(plugins):
+
+            def describe_components(component):
+                for component in component:
+                    print(
+                        f'    {"source : " + component.name:20} : {str(component.description):85} : {str(component.help)}')
+
+            for plugin in plugins:
+                print(f'  {plugin.name:22} : {plugin.description} : {plugin.path}')
+
+                describe_components(plugin.source_component_classes.values())
+                describe_components(plugin.filter_component_classes.values())
+                describe_components(plugin.sink_component_classes.values())
+                print()
+
+        print('System plugins:')
+        describe_plugins(system_plugins)
+
+        print('User specified plugins:')
+        describe_plugins(user_plugins)
+
     # Convert _PluginSet to dict
     plugins = {
         **{plugin.name: plugin for plugin in system_plugins},
@@ -36,6 +58,7 @@ Argument parser used by all can_graph examples.
 The examples might additionally extend the parser.
 """
 cmd_parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
+# More info: https://mkaz.blog/code/python-argparse-cookbook/
 cmd_parser.add_argument(
     "--system-plugin-path", type=str, default=None,
     help="Specify folder for system plugins (recursive!). "

@@ -48,7 +48,7 @@ class SinkEmitter(bt2._UserSinkComponent):
             #
             # See can_gui_responsive.py, graph/event_buffer.py on how this might be done.
             #
-            self._signal.emit(msg.event.name, str(msg.default_clock_snapshot.value))
+            self._signal.emit(str(msg.default_clock_snapshot.value), msg.event.name)
 
 
 # Graph processing thread
@@ -133,14 +133,15 @@ def main():
     tableView.setWindowTitle("Simple Babeltrace2 GUI demo")
     tableView.setModel(model)
 
-    tableView.setEditTriggers(QTableWidget.NoEditTriggers)  # read-only
-    tableView.verticalHeader().setDefaultSectionSize(10)    # row height
+    tableView.setEditTriggers(QTableWidget.NoEditTriggers)    # read-only
+    tableView.verticalHeader().setDefaultSectionSize(10)      # row height
+    tableView.horizontalHeader().setStretchLastSection(True)  # last column resizes to widget width
 
     # Provide slot that updates data model & triggers GUI update
     # https://www.riverbankcomputing.com/static/Docs/PyQt5/signals_slots.html
     @pyqtSlot(str, str)
-    def update_gui(name, timestamp):
-        model.appendRow( (QStandardItem(name), QStandardItem(timestamp)) )
+    def update_gui(timestamp, name):
+        model.appendRow( (QStandardItem(timestamp), QStandardItem(name)) )
         tableView.scrollToBottom()
 
     # Connect sink event signal to slot

@@ -2,65 +2,32 @@
 # *_* coding: utf-8 *_*
 
 """
-Creates and runs the same graph as the babeltrace-fun-plugins/can/check.sh utility.
+Creates and runs a graph with a can.CANSource source and in-app sink, which delegates stream info to the GUI.
 ---
 Please note: libbabeltrace2 python library (bt2) depends on its core C library.
-MOST ISSUES will be averted if you INSTALL the library on your system.
 ---
-If you still want to use the library without installation, set up the loader path
 LD_LIBRARY_PATH=[babeltrace2 build folder]/src/lib/.libs/
-
-And in order for python + system plugin loading
-make sure that the following environment variables are set to their respective paths:
-
 BABELTRACE_PLUGIN_PATH = [babeltrace2 build folder]/src/plugins/[plugin name]
 LIBBABELTRACE2_PLUGIN_PROVIDER_DIR = [babeltrace2 build folder]/src/python-plugin-provider/.libs/
 """
 
 import bt2
 
-import os
-import argparse
+# import local modules
+from graph.utils import load_plugins, cmd_parser
 
 
-# globals
-system_plugin_path = None
-plugin_path = None
-CANSource_data_path = None
-CANSource_dbc_path = None
-
-system_plugins = None
-user_plugins = None
-
-
-# Convert from _PluginSet to dict with plugin name as key
-def plugin_dict(plugin_set):
-    return {plugin.name : plugin for plugin in plugin_set}
-
-def describe_components(component):
-    for component in component:
-        print(f'    {"source : " + component.name:20} : {str(component.description):85} : {str(component.help)}')
-
-def describe_plugins(plugins):
-    for plugin in plugins:
-        print(f'  {plugin.name:22} : {plugin.description} : {plugin.path}')
-
-        describe_components(plugin.source_component_classes.values())
-        describe_components(plugin.filter_component_classes.values())
-        describe_components(plugin.sink_component_classes.values())
-        print()
-
-
-# BT2 graph - dumps CANSource trace to stdout
 def graph_can_detail():
-    # Load required components from plugins
-    sink = system_plugins['text'].sink_component_classes['details']
-    source = user_plugins['can'].source_component_classes['CANSource']
+    """
+    BT2 graph - dumps CANSource trace to stdout
+    """
+    global CANSource_data_path, CANSource_dbc_path
+    global plugins
 
     # Create graph and add components
     graph = bt2.Graph()
 
-    graph_sink = graph.add_component(sink, 'test_sink')
+    source = plugins['can'].source_component_classes['CANSource']
     graph_source = graph.add_component(source, 'test_source',
         # The plugin is actually capable of reading from multiple (list)
         # input and database files
@@ -73,6 +40,9 @@ def graph_can_detail():
             'databases' : bt2.ArrayValue([CANSource_dbc_path])
         })
     )
+
+    sink = plugins['text'].sink_component_classes['details']
+    graph_sink = graph.add_component(sink, 'test_sink')
 
     # Connect components together
 
@@ -90,25 +60,29 @@ def graph_can_detail():
     # Run graph
     graph.run()
 
-# BT2 graph - dumps CANSource trace to CTF
+
 def graph_can_ctf():
-    # Load required components from plugins
-    sink = system_plugins['ctf'].sink_component_classes['fs']
-    source = user_plugins['can'].source_component_classes['CANSource']
+    """
+    BT2 graph - dumps CANSource trace to CTF
+    """
+    global CANSource_data_path, CANSource_dbc_path
+    global plugins
 
     # Create graph and add components
     graph = bt2.Graph()
 
-    graph_sink = graph.add_component(sink, 'test_sink',
-        params=bt2.MapValue({
-            'path': './ctf-full'
-        })
-    )
-
+    source = plugins['can'].source_component_classes['CANSource']
     graph_source = graph.add_component(source, 'test_source',
         params=bt2.MapValue({
             'inputs': bt2.ArrayValue([CANSource_data_path]),
             'databases': bt2.ArrayValue([CANSource_dbc_path])
+        })
+    )
+
+    sink = plugins['ctf'].sink_component_classes['fs']
+    graph_sink = graph.add_component(sink, 'test_sink',
+        params=bt2.MapValue({
+            'path': './ctf-full'
         })
     )
 
@@ -121,40 +95,47 @@ def graph_can_ctf():
     # Run graph
     graph.run()
 
-# BT2 graph - trims CANSource
-#
-# With the repo version of bt_plugin_gui, this will fail with
-#   Cannot make upstream message iterator initially seek
-#
-# You need to provide an implementation of
-#   def _user_seek_ns_from_origin(self, ns_from_origin):
-# in bt2._UserMessageIterator in order to make it work
-#
-def graph_can_filter_ctf():
 
-    # Load required components from plugins
-    sink = system_plugins['ctf'].sink_component_classes['fs']
-    filter = system_plugins['utils'].filter_component_classes['trimmer']
-    source = user_plugins['can'].source_component_classes['CANSource']
+def graph_can_filter_ctf():
+    """
+    BT2 graph - trims CANSource
+
+    You need to provide an implementation of
+        def _user_seek_ns_from_origin(self, ns_from_origin):
+    in bt2._UserMessageIterator in order to make it work
+
+    otherwise trimmer fails with
+        Cannot make upstream message iterator initially seek
+
+    This has been worked around in the python version of bt_plugin_can,
+    however the C variant does not have this fix yet!
+    """
+    global CANSource_data_path, CANSource_dbc_path
+    global plugins
 
     # Create graph and add components
     graph = bt2.Graph()
 
-    graph_sink = graph.add_component(sink, 'test_sink',
+    source = plugins['can'].source_component_classes['CANSource']
+    graph_source = graph.add_component(source, 'test_source',
         params=bt2.MapValue({
-            'path' : './ctf-filtered'
+            'inputs' : bt2.ArrayValue([CANSource_data_path]),
+            'databases' : bt2.ArrayValue([CANSource_dbc_path])
         })
     )
+
+    filter = plugins['utils'].filter_component_classes['trimmer']
     graph_filter = graph.add_component(filter, 'test_filter',
         params=bt2.MapValue({
             'begin' : '0.000',
             'end' : '1000.000'
         })
     )
-    graph_source = graph.add_component(source, 'test_source',
+
+    sink = plugins['ctf'].sink_component_classes['fs']
+    graph_sink = graph.add_component(sink, 'test_sink',
         params=bt2.MapValue({
-            'inputs' : bt2.ArrayValue([CANSource_data_path]),
-            'databases' : bt2.ArrayValue([CANSource_dbc_path])
+            'path': './ctf-filtered'
         })
     )
 
@@ -171,36 +152,28 @@ def graph_can_filter_ctf():
     # Run graph
     graph.run()
 
-# BT2 graph - trims existing CTF trace
-#
-# With the repo version of bt_plugin_gui, the utils.trimmer will fail with
-#   Babeltrace 2 library postcondition not satisfied;
-#   Packet message has no default clock snapshot:
-#
-# This seems to be a limitation of the 2.0.0. version of utils.trimmer filter.
-# You can work around it by extending the CANSource to generate a packet-enabled stream.
-#
-def graph_ctf_filter_ctf():
 
-    # Load required components from plugins
-    sink = system_plugins['ctf'].sink_component_classes['fs']
-    filter = system_plugins['utils'].filter_component_classes['trimmer']
-    source = system_plugins['ctf'].source_component_classes['fs']
+def graph_ctf_filter_ctf():
+    """
+    BT2 graph - trims existing CTF trace
+
+    With the repo version of bt_plugin_gui, the utils.trimmer will fail with
+      Babeltrace 2 library postcondition not satisfied;
+      Packet message has no default clock snapshot:
+
+    This seems to be a limitation of the 2.0.0. version of utils.trimmer filter.
+    You can work around it by extending the CANSource to generate a packet-enabled stream.
+
+    This has been worked around in the python version of bt_plugin_can,
+    however the C variant does not have this fix yet!
+    """
+    global CANSource_data_path, CANSource_dbc_path
+    global plugins
 
     # Create graph and add components
     graph = bt2.Graph()
 
-    graph_sink = graph.add_component(sink, 'test_sink',
-        params=bt2.MapValue({
-            'path' : './ctf-filtered'
-        })
-    )
-    graph_filter = graph.add_component(filter, 'test_filter',
-        params=bt2.MapValue({
-            'begin' : '0.000',
-            'end' : '0.001'
-        })
-    )
+    source = plugins['ctf'].source_component_classes['fs']
     graph_source = graph.add_component(source, 'test_source',
         params=bt2.MapValue({
             # Can be provided with multiple inputs
@@ -209,6 +182,21 @@ def graph_ctf_filter_ctf():
         })
     )
 
+    filter = plugins['utils'].filter_component_classes['trimmer']
+    graph_filter = graph.add_component(filter, 'test_filter',
+        params=bt2.MapValue({
+            'begin' : '0.000',
+            'end' : '0.001'
+        })
+    )
+
+    sink = plugins['ctf'].sink_component_classes['fs']
+    graph_sink = graph.add_component(sink, 'test_sink',
+        params=bt2.MapValue({
+            'path' : './ctf-filtered'
+        })
+    )
+
     # Connect components together
     graph.connect_ports(
         list(graph_source.output_ports.values())[0],
@@ -222,76 +210,33 @@ def graph_ctf_filter_ctf():
     # Run graph
     graph.run()
 
-
+# build list of examples that can be run from the command line
+cmd_examples = {
+    'can_detail' : graph_can_detail,
+    'can_ctf' : graph_can_ctf,
+    'can_filter_ctf' : graph_can_filter_ctf,
+    'ctf_filter_ctf' : graph_ctf_filter_ctf
+}
 
 def main():
-    global system_plugins
-    global user_plugins
+    global example
 
-    print(
-        f'Current dir:          {os.getcwd()}\n'
-        f'plugin_path:          {plugin_path}\n'
-        f'CANSource_data_path:  {CANSource_data_path}\n'
-        f'CANSource_dbc_path:   {CANSource_dbc_path}\n'
+    cmd_examples[example]()
+
+if __name__ == "__main__":
+    global system_plugin_path, plugin_path
+    global plugins
+
+    # More info:
+    # https://stackoverflow.com/questions/37094448/is-there-a-clean-way-to-write-a-one-line-help-per-choice-for-argparse-choices
+    cmd_parser.add_argument(
+        "example",
+        choices=cmd_examples.keys(),
+        help="\n".join([f"{example[0]}: {example[1].__doc__}" for example in cmd_examples.items()])
     )
 
-    # Load plugins
-    system_plugins_set = None
-    if system_plugin_path:
-        print('Overriding default system search method!')
-        system_plugins_set = bt2.find_plugins_in_path(
-            system_plugin_path, fail_on_load_error=True
-        )
-    else:
-        system_plugins_set = bt2.find_plugins(
-            find_in_std_env_var=True,
-            find_in_user_dir=True,
-            find_in_sys_dir=True,
-            find_in_static=True,
-            fail_on_load_error=True
-        )
-    if system_plugins_set:
-        print('System plugins:')
-        describe_plugins(system_plugins_set)
-        system_plugins = plugin_dict(system_plugins_set)
-    else:
-        print('No system plugins found!')
-        return
+    # Parse command line and add parsed parameters to globals
+    globals().update(vars(cmd_parser.parse_args()))
 
-    user_plugins_set = bt2.find_plugins_in_path(plugin_path, fail_on_load_error=True)
-    if user_plugins_set:
-        print('User specified plugins:')
-        describe_plugins(user_plugins_set)
-        user_plugins = plugin_dict(user_plugins_set)
-    else:
-        print('No user specified plugins found!')
-        return
-
-    graph_can_filter_ctf()
-
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
-    parser.add_argument(
-        '--system-plugin-path', type=str, default=None,
-        help='Specify folder for system plugins (recursive!). Alternatively, set BABELTRACE_PLUGIN_PATH (non-recursive!)'
-    )
-    parser.add_argument(
-        '--plugin-path', type=str, default='./python/',
-        help='Path to "bt_user_can.(so|py)" plugin'
-    )
-    parser.add_argument(
-        '--CANSource-data-path', type=str, default='./test.data',
-        help='Path to test data required by bt_user_can'
-    )
-    parser.add_argument(
-        '--CANSource-dbc-path', type=str, default='./database.dbc',
-        help='Path to DBC (CAN Database) required by bt_user_can'
-    )
-    parser.add_argument(
-
-    )
-
-    # Add parameters to globals
-    globals().update(vars(parser.parse_args()))
-
+    plugins = load_plugins(system_plugin_path, plugin_path)
     main()
