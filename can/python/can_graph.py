@@ -287,6 +287,9 @@ if __name__ == '__main__':
         '--CANSource-dbc-path', type=str, default='./database.dbc',
         help='Path to DBC (CAN Database) required by bt_user_can'
     )
+    parser.add_argument(
+
+    )
 
     # Add parameters to globals
     globals().update(vars(parser.parse_args()))

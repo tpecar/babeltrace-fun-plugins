@@ -12,34 +12,20 @@ LIBBABELTRACE2_PLUGIN_PROVIDER_DIR = [babeltrace2 build folder]/src/python-plugi
 """
 
 import bt2
-
-import argparse
+import time
 
 from PyQt5.Qt import *
-from PyQt5.QtGui import *
 from PyQt5.QtWidgets import *
 
-# Loads system & user plugins to 'plugins' global
-def load_plugins():
-    global system_plugin_path, plugin_path
-    global plugins
+# import local modules
+from graph.utils import load_plugins, cmd_parser
 
-    # Load plugins
-    system_plugins = bt2.find_plugins_in_path(system_plugin_path) if system_plugin_path else bt2.find_plugins()
-    user_plugins = bt2.find_plugins_in_path(plugin_path)
 
-    assert system_plugins, "No system plugins found!"
-    assert user_plugins, "No user plugins found!"
-
-    # Convert _PluginSet to dict
-    plugins = {
-        **{plugin.name: plugin for plugin in system_plugins},
-        **{plugin.name: plugin for plugin in user_plugins}
-    }
-
-# Sink component that emits signals @ event
 @bt2.plugin_component_class
 class SinkEmitter(bt2._UserSinkComponent):
+    """
+    Sink component that emits a signal at event
+    """
 
     def __init__(self, config, params, obj):
         self._port = self._add_input_port("in")
@@ -49,39 +35,33 @@ class SinkEmitter(bt2._UserSinkComponent):
         self._it = self._create_message_iterator(self._port)
 
     def _user_consume(self):
-        # Consume one message and print it.
         msg = next(self._it)
 
-        handler = {
-            bt2._StreamBeginningMessageConst :
-                lambda : "Stream begin",
-            bt2._PacketBeginningMessageConst :
-                lambda : "Packet begin",
+        if type(msg) == bt2._EventMessageConst:
 
-            bt2._EventMessageConst :
-                # Do note that while passing data via signals is thread-safe, it is slow.
-                #
-                # For larger data, it is more sensible for threads to share memory objects,
-                # and only do mutex management over signals.
-                lambda : self._signal.emit(msg.event.name, str(msg.default_clock_snapshot.value)),
-
-            bt2._PacketEndMessageConst:
-                lambda : "Packet end",
-            bt2._StreamEndMessageConst:
-                lambda : "Stream end"
-        }
-        try:
-            msg = handler[type(msg)]()
-            if msg:
-                print(msg)
-        except KeyError:
-            raise RuntimeError("Unhandled message type", type(msg))
+            # Do note that while passing data via signals is thread-safe, it is slow,
+            # and loads the event loop.
+            #
+            # For larger data, it is more sensible for threads to share same memory objects,
+            # possibly even without mutexes (if the view is allowed to lag behind the model),
+            # and poll the model in intervals.
+            #
+            # See can_gui_responsive.py, graph/event_buffer.py on how this might be done.
+            #
+            self._signal.emit(msg.event.name, str(msg.default_clock_snapshot.value))
 
 
 # Graph processing thread
 #
-# We're using the QThread subclassing approach, check gotchas at
-# https://doc.qt.io/qt-5/qthread.html
+# Check Qt multithreading gotchas at
+#   https://doc.qt.io/qt-5/qthread.html
+#   https://mayaposch.wordpress.com/2011/11/01/how-to-really-truly-use-qthreads-the-full-explanation/
+#   https://www.kdab.com/wp-content/uploads/stories/slides/DD12/Multithreading_Presentation.pdf
+#
+# IDEs have limited support for QtThreads
+#   https://youtrack.jetbrains.com/issue/PY-24162
+#   https://intellij-support.jetbrains.com/hc/en-us/community/posts/203420404-Pycharm-debugger-not-stopping-on-QThread-breakpoints
+#
 class BT2GraphThread(QThread):
 
     # Signal that will be connected to the
@@ -90,9 +70,13 @@ class BT2GraphThread(QThread):
 
     def __init__(self, parent=None):
         super(BT2GraphThread, self).__init__(parent)
+        self._running = True
 
+    def run(self):
         global CANSource_data_path, CANSource_dbc_path
         global plugins
+
+        print("Graph thread start.")
 
         # Load required components from plugins
         source = plugins['can'].source_component_classes['CANSource']
@@ -117,13 +101,21 @@ class BT2GraphThread(QThread):
             list(graph_sink.input_ports.values())[0]
         )
 
-    def __del__(self):
-        self.wait()
-
-    def run(self):
         # Run graph
-        self._graph.run()
+        try:
+            while self._running:
+                self._graph.run_once()
+                # To block the graph_thread, which allows the main thread with the gui event loop to be rescheduled
+                # For a more elaborate example, see can_graph_gui_responsive.py
+                time.sleep(0.001)
 
+        except bt2.Stop:
+            print("Graph finished execution.")
+
+        print("Graph thread done.")
+
+    def stop(self):
+        self._running = False
 
 # GUI Application
 def main():
@@ -138,7 +130,7 @@ def main():
 
     # Table window
     tableView = QTableView()
-    tableView.setWindowTitle("Sink data")
+    tableView.setWindowTitle("Simple Babeltrace2 GUI demo")
     tableView.setModel(model)
 
     tableView.setEditTriggers(QTableWidget.NoEditTriggers)  # read-only
@@ -152,39 +144,25 @@ def main():
         tableView.scrollToBottom()
 
     # Connect sink event signal to slot
-    # Do note: event_signal is static, but it has to be accessed through instance
-    # (via class instance) in order to be "bound" (expose the .connect() method)
     graph_thread.event_signal.connect(update_gui)
 
     # Start graph thread
-    graph_thread.start(QThread.LowPriority)
+    graph_thread.start()
 
     # Start GUI event loop
     tableView.show()
     app.exec_()
+    graph_thread.stop()
+    graph_thread.wait()
+
+    print("Done.")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
-    parser.add_argument(
-        "--system-plugin-path", type=str, default=None,
-        help="Specify folder for system plugins (recursive!). "
-             "Alternatively, set BABELTRACE_PLUGIN_PATH (non-recursive!)"
-    )
-    parser.add_argument(
-        "--plugin-path", type=str, default="./python/",
-        help="Path to 'bt_user_can.(so|py)' plugin"
-    )
-    parser.add_argument(
-        "--CANSource-data-path", type=str, default="./test.data",
-        help="Path to test data required by bt_user_can"
-    )
-    parser.add_argument(
-        "--CANSource-dbc-path", type=str, default="./database.dbc",
-        help="Path to DBC (CAN Database) required by bt_user_can"
-    )
+    global system_plugin_path, plugin_path
+    global plugins
 
-    # Add parameters to globals
-    globals().update(vars(parser.parse_args()))
+    # Parse command line and add parsed parameters to globals
+    globals().update(vars(cmd_parser.parse_args()))
 
-    load_plugins()
+    plugins = load_plugins(system_plugin_path, plugin_path)
     main()
