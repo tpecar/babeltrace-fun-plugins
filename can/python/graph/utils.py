@@ -25,17 +25,17 @@ def load_plugins(system_plugin_path, plugin_path, verbose=True):
     if verbose:
         def describe_plugins(plugins):
 
-            def describe_components(component):
+            def describe_components(desc, component):
                 for component in component:
                     print(
-                        f'    {"source : " + component.name:20} : {str(component.description):85} : {str(component.help)}')
+                        f'    {desc + " : " + component.name:20} : {str(component.description):85} : {str(component.help)}')
 
             for plugin in plugins:
                 print(f'  {plugin.name:22} : {plugin.description} : {plugin.path}')
 
-                describe_components(plugin.source_component_classes.values())
-                describe_components(plugin.filter_component_classes.values())
-                describe_components(plugin.sink_component_classes.values())
+                describe_components("source", plugin.source_component_classes.values())
+                describe_components("filter", plugin.filter_component_classes.values())
+                describe_components("sink  ", plugin.sink_component_classes.values())
                 print()
 
         print('System plugins:')
