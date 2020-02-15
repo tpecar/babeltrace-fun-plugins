@@ -17,3 +17,16 @@ Files `test.data` and `database.dbc` are provided as an example.
 
 Note that the plugin using the C bindings needs to be compiled first,
 instructions are within its directory.
+
+---
+
+The graph examples
+ * [python/can_graph.py](python/can_graph.py)
+ * [python/can_graph_gui_simple.py](python/can_graph_gui_simple.py)
+ * [python/can_graph_gui_responsive.py](python/can_graph_gui_responsive.py)
+
+have extensive command line help (via `-h` switch) which should get you going.
+
+In short, as long as you're running them from the [python](python) directory,
+they should run fine without arguments
+(apart from can_graph.py, which requires you to select the graph example).
