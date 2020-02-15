@@ -3,6 +3,7 @@
 
 """
 Creates and runs a graph with a can.CANSource source and in-app sink, which delegates stream info to the GUI.
+A more complex example which allows for faster graph execution, while allowing for a decently responsive ui.
 ---
 Please note: libbabeltrace2 python library (bt2) depends on its core C library.
 ---
@@ -263,7 +264,8 @@ if __name__ == "__main__":
     global plugins
 
     # Parse command line and add parsed parameters to globals
-    globals().update(vars(cmd_parser.parse_args()))
+    parser = cmd_parser(__doc__)
+    globals().update(vars(parser.parse_args()))
 
     plugins = load_plugins(system_plugin_path, plugin_path)
     main()

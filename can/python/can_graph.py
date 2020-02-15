@@ -2,7 +2,8 @@
 # *_* coding: utf-8 *_*
 
 """
-Creates and runs a graph with a can.CANSource source and in-app sink, which delegates stream info to the GUI.
+Several examples of running Babeltrace2 graphs within Python.
+
 ---
 Please note: libbabeltrace2 python library (bt2) depends on its core C library.
 ---
@@ -227,16 +228,18 @@ if __name__ == "__main__":
     global system_plugin_path, plugin_path
     global plugins
 
+    # Parse command line and add parsed parameters to globals
+    parser = cmd_parser(__doc__)
+
     # More info:
     # https://stackoverflow.com/questions/37094448/is-there-a-clean-way-to-write-a-one-line-help-per-choice-for-argparse-choices
-    cmd_parser.add_argument(
+    parser.add_argument(
         "example",
         choices=cmd_examples.keys(),
         help="\n".join([f"{example[0]}: {example[1].__doc__}" for example in cmd_examples.items()])
     )
 
-    # Parse command line and add parsed parameters to globals
-    globals().update(vars(cmd_parser.parse_args()))
+    globals().update(vars(parser.parse_args()))
 
     plugins = load_plugins(system_plugin_path, plugin_path)
     main()

@@ -53,26 +53,29 @@ def load_plugins(system_plugin_path, plugin_path, verbose=True):
     return plugins
 
 
-"""
-Argument parser used by all can_graph examples.
-The examples might additionally extend the parser.
-"""
-cmd_parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
-# More info: https://mkaz.blog/code/python-argparse-cookbook/
-cmd_parser.add_argument(
-    "--system-plugin-path", type=str, default=None,
-    help="Specify folder for system plugins (recursive!). "
-         "Alternatively, set BABELTRACE_PLUGIN_PATH (non-recursive!)"
-)
-cmd_parser.add_argument(
-    "--plugin-path", type=str, default="./",
-    help="Path to 'bt_user_can.(so|py)' plugin"
-)
-cmd_parser.add_argument(
-    "--CANSource-data-path", type=str, default="../test.data",
-    help="Path to test data required by bt_user_can"
-)
-cmd_parser.add_argument(
-    "--CANSource-dbc-path", type=str, default="../database.dbc",
-    help="Path to DBC (CAN Database) required by bt_user_can"
-)
+def cmd_parser(description):
+    """
+    Argument parser used by all can_graph examples.
+    The examples might additionally extend the parser.
+    """
+    parser = argparse.ArgumentParser(description=description, formatter_class=argparse.RawTextHelpFormatter)
+    # More info: https://mkaz.blog/code/python-argparse-cookbook/
+    parser.add_argument(
+        "--system-plugin-path", type=str, default=None,
+        help="Specify folder for system plugins (recursive!). "
+             "Alternatively, set BABELTRACE_PLUGIN_PATH (non-recursive!)"
+    )
+    parser.add_argument(
+        "--plugin-path", type=str, default="./",
+        help="Path to 'bt_user_can.(so|py)' plugin"
+    )
+    parser.add_argument(
+        "--CANSource-data-path", type=str, default="../test.data",
+        help="Path to test data required by bt_user_can"
+    )
+    parser.add_argument(
+        "--CANSource-dbc-path", type=str, default="../database.dbc",
+        help="Path to DBC (CAN Database) required by bt_user_can"
+    )
+
+    return parser
