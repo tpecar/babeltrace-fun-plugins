@@ -16,6 +16,12 @@ This repository contains a few silly or less silly Babetrace 2 plugins.
 
 There are also silly examples of constructing Babeltrace2 graphs
  * with the [CAN source and different components](/can/python/can_graph.py)
- * with the CAN source and a sink which forwards events to the PyQt5 GUI
-    * [the easy way](/can/python/can_graph_gui_simple.py)
-    * [in a more complicated, but more performant way](/can/python/can_graph_gui_responsive.py)
+ * with the CAN source and a sink which forwards events to the PyQt5 GUI, with the graph running in
+    * [the GUI event loop](/can/python/can_graph_gui_threaded_simple.py), which is fast and easy
+   
+   You can also run the graph in a separate thread, which is more complex and with little additional benefit.
+   
+   But, if you _really really_ want to, you can
+    * [pass data via signals](/can/python/can_graph_gui_threaded_simple.py) and get into performance issues
+    * [try to optimize the heck out of it](/can/python/can_graph_gui_threaded_responsive.py)
+    and you get similar performance as the event loop example.

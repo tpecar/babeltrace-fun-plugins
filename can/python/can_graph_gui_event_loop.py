@@ -126,7 +126,15 @@ def main():
     # Run graph as part of the GUI event loop
     # https://stackoverflow.com/questions/36988826/running-code-in-the-main-loop
     graph_timer = QTimer()
-    graph_timer.timeout.connect(lambda: graph.run_once())
+
+    def run_graph():
+        try:
+            graph.run_once()
+        except bt2.Stop:
+            print("Graph finished execution.")
+            graph_timer.stop()
+
+    graph_timer.timeout.connect(run_graph)
     graph_timer.start()
 
     # Start GUI event loop
