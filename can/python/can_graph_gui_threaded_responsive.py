@@ -4,6 +4,10 @@
 """
 Creates and runs a graph with a can.CANSource source and in-app sink, which delegates stream info to the GUI.
 A more complex example which allows for faster graph execution, while allowing for a decently responsive ui.
+
+Thread-based implementation, with all the workaround to make it as fast as possible.
+
+Check the event loop implementation, which is *by far* the best way of doing it and is *just as fast/faster*.
 ---
 Please note: libbabeltrace2 python library (bt2) depends on its core C library.
 ---
