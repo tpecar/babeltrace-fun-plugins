@@ -23,6 +23,118 @@ from graph.event_buffer import EventBuffer, EventBufferTableModel
 from graph.utils import load_plugins, cmd_parser
 
 
+# Tree view
+#
+# PyQt5-5.14.2.devX/examples/itemviews/simpletreemodel/simpletreemodel.py
+# PyQt5-5.14.2.devX/examples/itemviews/editabletreemodel/editabletreemodel.py
+#
+class TreeItem(object):
+    def __init__(self, data, parent=None):
+        self.parentItem = parent
+        self.itemData = data
+        self.childItems = []
+
+    def appendChild(self, item):
+        self.childItems.append(item)
+
+    def child(self, row):
+        return self.childItems[row]
+
+    def childCount(self):
+        return len(self.childItems)
+
+    def columnCount(self):
+        return len(self.itemData)
+
+    def data(self, column):
+        try:
+            return self.itemData[column]
+        except IndexError:
+            return None
+
+    def parent(self):
+        return self.parentItem
+
+    def row(self):
+        if self.parentItem:
+            return self.parentItem.childItems.index(self)
+
+        return 0
+
+class TreeModel(QAbstractItemModel):
+    def __init__(self, rootItem, parent=None):
+        super(TreeModel, self).__init__(parent)
+
+        self.rootItem = rootItem
+
+    def columnCount(self, parent):
+        if parent.isValid():
+            return parent.internalPointer().columnCount()
+        else:
+            return self.rootItem.columnCount()
+
+    def data(self, index, role):
+        if not index.isValid():
+            return None
+
+        if role != Qt.DisplayRole:
+            return None
+
+        item = index.internalPointer()
+
+        return item.data(index.column())
+
+    def flags(self, index):
+        if not index.isValid():
+            return Qt.NoItemFlags
+
+        return Qt.ItemIsEnabled | Qt.ItemIsSelectable
+
+    def headerData(self, section, orientation, role):
+        if orientation == Qt.Horizontal and role == Qt.DisplayRole:
+            return self.rootItem.data(section)
+
+        return None
+
+    def index(self, row, column, parent):
+        if not self.hasIndex(row, column, parent):
+            return QModelIndex()
+
+        if not parent.isValid():
+            parentItem = self.rootItem
+        else:
+            parentItem = parent.internalPointer()
+
+        childItem = parentItem.child(row)
+        if childItem:
+            return self.createIndex(row, column, childItem)
+        else:
+            return QModelIndex()
+
+    def parent(self, index):
+        if not index.isValid():
+            return QModelIndex()
+
+        childItem = index.internalPointer()
+        parentItem = childItem.parent()
+
+        if parentItem == self.rootItem:
+            return QModelIndex()
+
+        return self.createIndex(parentItem.row(), 0, parentItem)
+
+    def rowCount(self, parent):
+        if parent.column() > 0:
+            return 0
+
+        if not parent.isValid():
+            parentItem = self.rootItem
+        else:
+            parentItem = parent.internalPointer()
+
+        return parentItem.childCount()
+
+
 @bt2.plugin_component_class
 class EventBufferSink(bt2._UserSinkComponent):
     """
@@ -48,21 +160,39 @@ class EventBufferSink(bt2._UserSinkComponent):
 #
 class MainWindow(QMainWindow):
 
-    def __init__(self, buffer, model):
+    def __init__(self, buffer, tableModel):
         super().__init__()
         self._buffer = buffer
-        self._model = model
+        self._tableModel = tableModel
 
         self.setWindowTitle("Responsive Babeltrace2 GUI demo")
 
         # Table view
         self._tableView = QTableView()
         self._tableView.setWindowTitle("Sink data")
-        self._tableView.setModel(model)
+        self._tableView.setModel(tableModel)
 
         self._tableView.setEditTriggers(QTableWidget.NoEditTriggers)    # read-only
         self._tableView.verticalHeader().setDefaultSectionSize(10)      # row height
         self._tableView.horizontalHeader().setStretchLastSection(True)  # last column resizes to widget width
+
+        # Tree view
+        #
+        # PyQt5-5.14.2.devX/examples/itemviews/simpletreemodel/simpletreemodel.py
+        # PyQt5-5.14.2.devX/examples/itemviews/editabletreemodel/editabletreemodel.py
+        #
+        self._treeModel = TreeModel(TreeItem( ("Column 1", "Column 2", "Column 3") ))
+
+        item1 = TreeItem( ("Test 1", "Test 2", "Test 3"), self._treeModel.rootItem )
+        self._treeModel.rootItem.appendChild(item1)
+
+        item2 = TreeItem( ("Test 21", "Test 22", "Test 23"), item1 )
+        item1.appendChild(item2)
+
+        self._treeView = QTreeView()
+        self._treeView.setModel(self._treeModel)
+        self._treeView.expandAll()
+        self._treeView.setItemsExpandable(False)
 
         # Statistics label
         self._statLabel = QLabel("Events (processed/loaded): - / -")
@@ -73,7 +203,15 @@ class MainWindow(QMainWindow):
 
         # Layout
         self._layout = QGridLayout()
-        self._layout.addWidget(self._tableView, 0, 0, 1, 2) # See https://doc.qt.io/qt-5/qgridlayout.html#addWidget-2
+
+        # See https://doc.qt.io/qt-5/qgridlayout.html#addWidget-2
+        #
+        #    0           1
+        # 0 [< treeView ] [< tableView     ]
+        # 1 [< statLabel] [followCheckbox >]
+        #
+        self._layout.addWidget(self._treeView,  0, 0)
+        self._layout.addWidget(self._tableView, 0, 1)
         self._layout.addWidget(self._statLabel, 1, 0)
         self._layout.addWidget(self._followCheckbox, 1, 1, 1, 1, Qt.AlignRight)
 
@@ -88,18 +226,18 @@ class MainWindow(QMainWindow):
     def timerEvent(self, QTimerEvent):
 
         # Statistics
-        self._statLabel.setText(f"Events (processed/loaded): {len(self._buffer)} / {self._model.rowCount()}")
+        self._statLabel.setText(f"Events (processed/loaded): {len(self._buffer)} / {self._tableModel.rowCount()}")
 
         # Force the view to call canFetchMore / fetchMore initially
-        if not self._model.rowCount():
-            self._model.modelReset.emit()
+        if not self._tableModel.rowCount():
+            self._tableModel.modelReset.emit()
 
         # Follow events
         if self._followCheckbox.isChecked():
             # The following could be achieved similarly with self._tableView.scrollToBottom(), but that method has
             # issues with skipping multiple rows - rows appear to "bounce" and it's hard to look at the output
             #
-            self._tableView.scrollTo(self._model.index(self._model.rowCount()-1, 0), QAbstractItemView.PositionAtBottom)
+            self._tableView.scrollTo(self._tableModel.index(self._tableModel.rowCount() - 1, 0), QAbstractItemView.PositionAtBottom)
 
 
 # GUI Application
