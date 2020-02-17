@@ -13,6 +13,7 @@ LIBBABELTRACE2_PLUGIN_PROVIDER_DIR = [babeltrace2 build folder]/src/python-plugi
 """
 
 import bt2
+import collections.abc
 
 # import local modules
 from graph.utils import load_plugins, cmd_parser
@@ -20,7 +21,7 @@ from graph.utils import load_plugins, cmd_parser
 
 def graph_can_detail():
     """
-    BT2 graph - dumps CANSource trace to stdout
+    BT2 graph - dumps CANSource trace to stdout via system-provided text.details
     """
     global CANSource_data_path, CANSource_dbc_path
     global plugins
@@ -53,6 +54,117 @@ def graph_can_detail():
     # So we will ignore the port name and connect the first available port
     # from the component
     #
+    graph.connect_ports(
+        list(graph_source.output_ports.values())[0],
+        list(graph_sink.input_ports.values())[0]
+    )
+
+    # Run graph
+    graph.run()
+
+
+def graph_can_user_detail():
+    """
+    BT2 graph - dumps CANSource trace to stdout via user provided sink
+    """
+    global CANSource_data_path, CANSource_dbc_path
+    global plugins
+
+    # Create graph and add components
+    graph = bt2.Graph()
+
+    source = plugins['can'].source_component_classes['CANSource']
+    graph_source = graph.add_component(source, 'test_source',
+        # The plugin is actually capable of reading from multiple (list)
+        # input and database files
+        #
+        # For the sake of simplicity, this script only supplies ONE
+        # input and database file.
+        #
+        params=bt2.MapValue({
+            'inputs' : bt2.ArrayValue([CANSource_data_path]),
+            'databases' : bt2.ArrayValue([CANSource_dbc_path])
+        })
+    )
+
+    @bt2.plugin_component_class
+    class MySink(bt2._UserSinkComponent):
+        """
+        Sink component that dumps to stdout.
+        """
+
+        def __init__(self, config, params, obj):
+            self._port = self._add_input_port("in")
+            self._buffer = obj
+
+        def _user_graph_is_configured(self):
+            self._it = self._create_message_iterator(self._port)
+
+        def _user_consume(self):
+            msg = next(self._it)
+
+            # Default message type parser
+            def print_msg(detail=''):
+                print(f"<{type(msg).__name__}> {detail}")
+
+            # Event class payload field parsing
+            #
+            # More info:
+            #
+            # C documentation for Stream / Event / Field classes
+            #   https://babeltrace.org/docs/v2.0/libbabeltrace2/group__api-tir-stream-cls.html
+            #   https://babeltrace.org/docs/v2.0/libbabeltrace2/group__api-tir-ev-cls.html
+            #   https://babeltrace.org/docs/v2.0/libbabeltrace2/group__api-tir-ev-cls.html#api-tir-ev-cls-prop-p-fc
+            #   https://babeltrace.org/docs/v2.0/libbabeltrace2/group__api-tir-fc.html
+            #
+            # Python wrapper
+            #   babeltrace-2.0.0/src/bindings/python/bt2/bt2/stream_class.py
+            #   babeltrace-2.0.0/src/bindings/python/bt2/bt2/field_class.py
+            #
+            # text.details sink source
+            #   babeltrace-2.0.0/src/plugins/text/details/write.c
+            #       static void write_stream_class(struct details_write_ctx *ctx, const bt_stream_class *sc) definition
+            #       static void write_event_class(struct details_write_ctx *ctx, const bt_event_class *ec) definition
+            #       static void write_field_class(struct details_write_ctx *ctx, const bt_field_class *fc) definition
+            #
+            def StreamBeginningMessage_parser():
+                print_msg()
+
+                # Parse event classes
+                for event_class in msg.stream.cls.values():
+                    # Parse field classes recursively
+                    def parse_container(container, name, level=0):
+                        print(f"{' ' * (5 * level)}{name} : {type(container)._NAME}")
+
+                        # If member is a container type, iterate over it
+                        if issubclass(type(container), collections.abc.Mapping):
+                            for member in container.values():
+                                parse_container(member.field_class, member.name, level + 1)
+
+                    parse_container(event_class.payload_field_class, f"{event_class.id:3}: {event_class.name}")
+                    print()
+
+            def EventMessage_parser():
+                print_msg(
+                    f"{msg.default_clock_snapshot.value:6} : "
+                    f"{msg.event.id:3} : "
+                    f"{msg.event.name:40} : "
+                    f"{str(msg.event.payload_field)}"
+                )
+
+            # I'm not sorry for this
+            try:
+                {
+                    bt2._StreamBeginningMessageConst    : StreamBeginningMessage_parser,
+                    bt2._EventMessageConst              : EventMessage_parser
+                }[type(msg)]()
+            except KeyError:
+                print_msg()
+
+
+    graph_sink = graph.add_component(MySink, 'test_sink')
+
+    # Connect components together
     graph.connect_ports(
         list(graph_source.output_ports.values())[0],
         list(graph_sink.input_ports.values())[0]
@@ -214,6 +326,7 @@ def graph_ctf_filter_ctf():
 # build list of examples that can be run from the command line
 cmd_examples = {
     'can_detail' : graph_can_detail,
+    'can_user_detail' : graph_can_user_detail,
     'can_ctf' : graph_can_ctf,
     'can_filter_ctf' : graph_can_filter_ctf,
     'ctf_filter_ctf' : graph_ctf_filter_ctf
