@@ -3,9 +3,7 @@
 
 """
 Creates and runs a graph with a can.CANSource source and in-app sink, which delegates stream info to the GUI.
-A more complex example which allows for faster graph execution, while allowing for a decently responsive ui.
-
-Event-loop implementation. Fast and simple.
+A more complex example which allows for faster graph execution.
 ---
 Please note: libbabeltrace2 python library (bt2) depends on its core C library.
 ---
@@ -15,15 +13,35 @@ LIBBABELTRACE2_PLUGIN_PROVIDER_DIR = [babeltrace2 build folder]/src/python-plugi
 """
 
 import bt2
-import time
 import numpy as np
 
 from PyQt5.Qt import *
 from PyQt5.QtWidgets import *
 
 # import local modules
-from graph.event_buffer import EventBuffer, EventBufferSink, EventBufferTableModel
+from graph.event_buffer import EventBuffer, EventBufferTableModel
 from graph.utils import load_plugins, cmd_parser
+
+
+@bt2.plugin_component_class
+class EventBufferSink(bt2._UserSinkComponent):
+    """
+    Sink component that stores event messages in provided EventBuffer.
+    """
+
+    def __init__(self, config, params, obj):
+        self._port = self._add_input_port("in")
+        self._buffer = obj
+
+    def _user_graph_is_configured(self):
+        self._it = self._create_message_iterator(self._port)
+
+    def _user_consume(self):
+        msg = next(self._it)
+
+        if type(msg) == bt2._EventMessageConst:
+            # Save event to buffer
+            self._buffer.append((msg.default_clock_snapshot.value, msg.event.name))
 
 
 # MainWindow
@@ -79,7 +97,7 @@ class MainWindow(QMainWindow):
         # Follow events
         if self._followCheckbox.isChecked():
             # The following could be achieved similarly with self._tableView.scrollToBottom(), but that method has
-            # issues with panning - rows appear to "bounce" and it's hard to look at the output
+            # issues with skipping multiple rows - rows appear to "bounce" and it's hard to look at the output
             #
             self._tableView.scrollTo(self._model.index(self._model.rowCount()-1, 0), QAbstractItemView.PositionAtBottom)
 
