@@ -144,7 +144,7 @@ class EventBufferSink(bt2._UserSinkComponent):
 
     def __init__(self, config, params, obj):
         self._port = self._add_input_port("in")
-        self._buffer = obj
+        (self._buffer, self._treeRoot) = obj
 
     def _user_graph_is_configured(self):
         self._it = self._create_message_iterator(self._port)
@@ -153,39 +153,23 @@ class EventBufferSink(bt2._UserSinkComponent):
         msg = next(self._it)
 
         # Event class payload field parsing
-        #
-        # More info:
-        #
-        # C documentation for Stream / Event / Field classes
-        #   https://babeltrace.org/docs/v2.0/libbabeltrace2/group__api-tir-stream-cls.html
-        #   https://babeltrace.org/docs/v2.0/libbabeltrace2/group__api-tir-ev-cls.html
-        #   https://babeltrace.org/docs/v2.0/libbabeltrace2/group__api-tir-ev-cls.html#api-tir-ev-cls-prop-p-fc
-        #   https://babeltrace.org/docs/v2.0/libbabeltrace2/group__api-tir-fc.html
-        #
-        # Python wrapper
-        #   babeltrace-2.0.0/src/bindings/python/bt2/bt2/stream_class.py
-        #   babeltrace-2.0.0/src/bindings/python/bt2/bt2/field_class.py
-        #
-        # text.details sink source
-        #   babeltrace-2.0.0/src/plugins/text/details/write.c
-        #       static void write_stream_class(struct details_write_ctx *ctx, const bt_stream_class *sc) definition
-        #       static void write_event_class(struct details_write_ctx *ctx, const bt_event_class *ec) definition
-        #       static void write_field_class(struct details_write_ctx *ctx, const bt_field_class *fc) definition
-        #
         if type(msg) == bt2._StreamBeginningMessageConst:
             # Parse event classes
             for event_class in msg.stream.cls.values():
+
+                # TODO: move out of sink + signal slot
+
                 # Parse field classes recursively
-                def parse_container(container, name, level=0):
-                    print(f"{' '*(5*level)}{name} : {type(container)._NAME}")
+                def parse_container(container, name, rootItem):
+                    containerItem = TreeItem( (name, type(container)._NAME), rootItem )
+                    rootItem.appendChild(containerItem)
 
                     # If member is a container type, iterate over it
                     if issubclass(type(container), collections.abc.Mapping):
                         for member in container.values():
-                            parse_container(member.field_class, member.name, level+1)
+                            parse_container(member.field_class, member.name, containerItem)
 
-                parse_container(event_class.payload_field_class, f"{event_class.id:3}: {event_class.name}")
-                print()
+                parse_container(event_class.payload_field_class, f"{event_class.id} : {event_class.name}", self._treeRoot)
 
         if type(msg) == bt2._EventMessageConst:
             # Save event to buffer
@@ -196,10 +180,11 @@ class EventBufferSink(bt2._UserSinkComponent):
 #
 class MainWindow(QMainWindow):
 
-    def __init__(self, buffer, tableModel):
+    def __init__(self, buffer, tableModel, treeModel):
         super().__init__()
         self._buffer = buffer
         self._tableModel = tableModel
+        self._treeModel = treeModel
 
         self.setWindowTitle("Responsive Babeltrace2 GUI demo")
 
@@ -213,22 +198,11 @@ class MainWindow(QMainWindow):
         self._tableView.horizontalHeader().setStretchLastSection(True)  # last column resizes to widget width
 
         # Tree view
-        #
-        # PyQt5-5.14.2.devX/examples/itemviews/simpletreemodel/simpletreemodel.py
-        # PyQt5-5.14.2.devX/examples/itemviews/editabletreemodel/editabletreemodel.py
-        #
-        self._treeModel = TreeModel(TreeItem( ("Column 1", "Column 2", "Column 3") ))
-
-        item1 = TreeItem( ("Test 1", "Test 2", "Test 3"), self._treeModel.rootItem )
-        self._treeModel.rootItem.appendChild(item1)
-
-        item2 = TreeItem( ("Test 21", "Test 22", "Test 23"), item1 )
-        item1.appendChild(item2)
-
         self._treeView = QTreeView()
         self._treeView.setModel(self._treeModel)
-        self._treeView.expandAll()
-        self._treeView.setItemsExpandable(False)
+        self._treeViewReady = False
+        #self._treeView.expandAll()
+        #self._treeView.setItemsExpandable(False)
 
         # Statistics label
         self._statLabel = QLabel("Events (processed/loaded): - / -")
@@ -268,6 +242,12 @@ class MainWindow(QMainWindow):
         if not self._tableModel.rowCount():
             self._tableModel.modelReset.emit()
 
+        # If first item, then all are present (because all are fetched in one graph cycle)
+        if not self._treeViewReady and self._treeModel.hasIndex(0, 0):
+            self._treeModel.modelReset.emit()
+            self._treeViewReady = True
+            self._treeView.expandAll()
+
         # Follow events
         if self._followCheckbox.isChecked():
             # The following could be achieved similarly with self._tableView.scrollToBottom(), but that method has
@@ -286,6 +266,16 @@ def main():
     # Event buffer
     buffer = EventBuffer(event_block_sz=500, event_dtype=np.dtype([('timestamp', np.int32), ('name', 'U35')]))
 
+    # Table view data model
+    tableModel = EventBufferTableModel(buffer)
+    tableModel.setHorizontalHeaderLabels(buffer.dtype.names)
+
+    # Tree view data model
+    # PyQt5-5.14.2.devX/examples/itemviews/simpletreemodel/simpletreemodel.py
+    # PyQt5-5.14.2.devX/examples/itemviews/editabletreemodel/editabletreemodel.py
+    treeModel = TreeModel(TreeItem(("Name", "Type")))
+
+
     # Create graph and add components
     graph = bt2.Graph()
 
@@ -299,7 +289,7 @@ def main():
 
     # Do note: event_signal is static, but it has to be accessed through instance
     # (via self.) in order to be "bound" (expose the .emit() method)
-    graph_sink = graph.add_component(EventBufferSink, 'sink', obj=buffer)
+    graph_sink = graph.add_component(EventBufferSink, 'sink', obj=(buffer, treeModel.rootItem))
 
     # Connect components together
     graph.connect_ports(
@@ -308,12 +298,8 @@ def main():
     )
 
 
-    # Data model
-    model = EventBufferTableModel(buffer)
-    model.setHorizontalHeaderLabels(buffer.dtype.names)
-
     # Main window
-    mainWindow = MainWindow(buffer, model)
+    mainWindow = MainWindow(buffer, tableModel, treeModel)
 
     # Run graph as part of the GUI event loop
     # https://stackoverflow.com/questions/36988826/running-code-in-the-main-loop
