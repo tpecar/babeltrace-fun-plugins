@@ -13,6 +13,7 @@ LIBBABELTRACE2_PLUGIN_PROVIDER_DIR = [babeltrace2 build folder]/src/python-plugi
 """
 
 import bt2
+import collections.abc
 import numpy as np
 
 from PyQt5.Qt import *
@@ -150,6 +151,41 @@ class EventBufferSink(bt2._UserSinkComponent):
 
     def _user_consume(self):
         msg = next(self._it)
+
+        # Event class payload field parsing
+        #
+        # More info:
+        #
+        # C documentation for Stream / Event / Field classes
+        #   https://babeltrace.org/docs/v2.0/libbabeltrace2/group__api-tir-stream-cls.html
+        #   https://babeltrace.org/docs/v2.0/libbabeltrace2/group__api-tir-ev-cls.html
+        #   https://babeltrace.org/docs/v2.0/libbabeltrace2/group__api-tir-ev-cls.html#api-tir-ev-cls-prop-p-fc
+        #   https://babeltrace.org/docs/v2.0/libbabeltrace2/group__api-tir-fc.html
+        #
+        # Python wrapper
+        #   babeltrace-2.0.0/src/bindings/python/bt2/bt2/stream_class.py
+        #   babeltrace-2.0.0/src/bindings/python/bt2/bt2/field_class.py
+        #
+        # text.details sink source
+        #   babeltrace-2.0.0/src/plugins/text/details/write.c
+        #       static void write_stream_class(struct details_write_ctx *ctx, const bt_stream_class *sc) definition
+        #       static void write_event_class(struct details_write_ctx *ctx, const bt_event_class *ec) definition
+        #       static void write_field_class(struct details_write_ctx *ctx, const bt_field_class *fc) definition
+        #
+        if type(msg) == bt2._StreamBeginningMessageConst:
+            # Parse event classes
+            for event_class in msg.stream.cls.values():
+                # Parse field classes recursively
+                def parse_container(container, name, level=0):
+                    print(f"{' '*(5*level)}{name} : {type(container)._NAME}")
+
+                    # If member is a container type, iterate over it
+                    if issubclass(type(container), collections.abc.Mapping):
+                        for member in container.values():
+                            parse_container(member.field_class, member.name, level+1)
+
+                parse_container(event_class.payload_field_class, f"{event_class.id:3}: {event_class.name}")
+                print()
 
         if type(msg) == bt2._EventMessageConst:
             # Save event to buffer
