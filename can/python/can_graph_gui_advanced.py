@@ -20,16 +20,14 @@ from PyQt5.Qt import *
 from PyQt5.QtWidgets import *
 
 # import local modules
-from graph.event_buffer import EventBuffer, EventBufferTableModel
+from graph.event_buffer import AppendableTableModel, AppendableTreeModel
 from graph.utils import load_plugins, cmd_parser
 
 
-# Tree view
-#
-# PyQt5-5.14.2.devX/examples/itemviews/simpletreemodel/simpletreemodel.py
-# PyQt5-5.14.2.devX/examples/itemviews/editabletreemodel/editabletreemodel.py
-#
 class TreeItem(object):
+    """
+    Single node in tree.
+    """
     def __init__(self, data, parent=None):
         self.parentItem = parent
         self.itemData = data
@@ -63,8 +61,12 @@ class TreeItem(object):
         return 0
 
 class TreeModel(QAbstractItemModel):
+    """
+    Tree implemented as a linked TreeItem objects.
+    Flexible during tree creation, slow in traversal.
+    """
     def __init__(self, rootItem, parent=None):
-        super(TreeModel, self).__init__(parent)
+        super().__init__(parent)
 
         self.rootItem = rootItem
 
@@ -135,7 +137,6 @@ class TreeModel(QAbstractItemModel):
 
         return parentItem.childCount()
 
-
 @bt2.plugin_component_class
 class EventBufferSink(bt2._UserSinkComponent):
     """
@@ -180,11 +181,10 @@ class EventBufferSink(bt2._UserSinkComponent):
 #
 class MainWindow(QMainWindow):
 
-    def __init__(self, buffer, tableModel, treeModel):
+    def __init__(self, tableModel, treeModel):
         super().__init__()
-        self._buffer = buffer
         self._tableModel = tableModel
-        self._treeModel = treeModel
+        self._treeModel = AppendableTreeModel(10, [('Name', 'U20'), ('Type', 'U20')])
 
         self.setWindowTitle("Responsive Babeltrace2 GUI demo")
 
@@ -203,6 +203,8 @@ class MainWindow(QMainWindow):
         self._treeViewReady = False
         #self._treeView.expandAll()
         #self._treeView.setItemsExpandable(False)
+
+        self._treeView.setUniformRowHeights(True)
 
         # Statistics label
         self._statLabel = QLabel("Events (processed/loaded): - / -")
@@ -236,7 +238,7 @@ class MainWindow(QMainWindow):
     def timerEvent(self, QTimerEvent):
 
         # Statistics
-        self._statLabel.setText(f"Events (processed/loaded): {len(self._buffer)} / {self._tableModel.rowCount()}")
+        self._statLabel.setText(f"Events (processed/loaded): {len(self._tableModel._array)} / {self._tableModel.rowCount()}")
 
         # Force the view to call canFetchMore / fetchMore initially
         if not self._tableModel.rowCount():
@@ -246,7 +248,7 @@ class MainWindow(QMainWindow):
         if not self._treeViewReady and self._treeModel.hasIndex(0, 0):
             self._treeModel.modelReset.emit()
             self._treeViewReady = True
-            self._treeView.expandAll()
+            #self._treeView.expandAll()
 
         # Follow events
         if self._followCheckbox.isChecked():
@@ -263,12 +265,8 @@ def main():
 
     app = QApplication([])
 
-    # Event buffer
-    buffer = EventBuffer(event_block_sz=500, event_dtype=np.dtype([('timestamp', np.int32), ('name', 'U35')]))
-
     # Table view data model
-    tableModel = EventBufferTableModel(buffer)
-    tableModel.setHorizontalHeaderLabels(buffer.dtype.names)
+    tableModel = AppendableTableModel(block_size=500, dtype_struct=[('timestamp', np.uint32), ('name', 'U35')])
 
     # Tree view data model
     # PyQt5-5.14.2.devX/examples/itemviews/simpletreemodel/simpletreemodel.py
@@ -289,7 +287,7 @@ def main():
 
     # Do note: event_signal is static, but it has to be accessed through instance
     # (via self.) in order to be "bound" (expose the .emit() method)
-    graph_sink = graph.add_component(EventBufferSink, 'sink', obj=(buffer, treeModel.rootItem))
+    graph_sink = graph.add_component(EventBufferSink, 'sink', obj=(tableModel, treeModel.rootItem))
 
     # Connect components together
     graph.connect_ports(
@@ -299,7 +297,7 @@ def main():
 
 
     # Main window
-    mainWindow = MainWindow(buffer, tableModel, treeModel)
+    mainWindow = MainWindow(tableModel, treeModel)
 
     # Run graph as part of the GUI event loop
     # https://stackoverflow.com/questions/36988826/running-code-in-the-main-loop
