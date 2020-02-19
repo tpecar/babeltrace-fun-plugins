@@ -19,8 +19,6 @@ class AppendableTableModel(QAbstractTableModel):
       PyQt5-5.14.2.devX/examples/multimediawidgets/player.py
     """
 
-    __slots__ = ['_table', '_headers', '_data_columnCount', '_data_rowCount']
-
     def __init__(self, headers, parent=None):
         super().__init__(parent)
 

@@ -45,8 +45,6 @@ class EventBufferSink(bt2._UserSinkComponent):
             # Parse event classes
             for event_class in msg.stream.cls.values():
 
-                # TODO: move out of sink + signal slot
-
                 # Parse field classes recursively
                 def parse_field_class(field_class, name, parentItem):
                     field_class_item = parentItem.appendItem((name, type(field_class)._NAME))
@@ -91,8 +89,6 @@ class MainWindow(QMainWindow):
         self._treeView = QTreeView()
         self._treeView.setModel(self._treeModel)
         self._treeViewReady = False
-        #self._treeView.expandAll()
-        #self._treeView.setItemsExpandable(False)
 
         self._treeView.setUniformRowHeights(True)
 
@@ -129,16 +125,6 @@ class MainWindow(QMainWindow):
 
         # Statistics
         self._statLabel.setText(f"Events (processed/loaded): {len(self._tableModel._table)} / {self._tableModel.rowCount()}")
-
-        # Force the view to call canFetchMore / fetchMore initially
-        if not self._tableModel.rowCount():
-            self._tableModel.modelReset.emit()
-
-        # If first item, then all are present (because all are fetched in one graph cycle)
-        if not self._treeViewReady and self._treeModel.hasIndex(0, 0):
-            self._treeModel.modelReset.emit()
-            self._treeViewReady = True
-            self._treeView.expandAll()
 
         # Follow events
         if self._followCheckbox.isChecked():
