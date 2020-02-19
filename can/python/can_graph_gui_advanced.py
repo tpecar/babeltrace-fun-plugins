@@ -24,119 +24,6 @@ from graph.event_buffer import AppendableTableModel, AppendableTreeModel
 from graph.utils import load_plugins, cmd_parser
 
 
-class TreeItem(object):
-    """
-    Single node in tree.
-    """
-    def __init__(self, data, parent=None):
-        self.parentItem = parent
-        self.itemData = data
-        self.childItems = []
-
-    def appendChild(self, item):
-        self.childItems.append(item)
-
-    def child(self, row):
-        return self.childItems[row]
-
-    def childCount(self):
-        return len(self.childItems)
-
-    def columnCount(self):
-        return len(self.itemData)
-
-    def data(self, column):
-        try:
-            return self.itemData[column]
-        except IndexError:
-            return None
-
-    def parent(self):
-        return self.parentItem
-
-    def row(self):
-        if self.parentItem:
-            return self.parentItem.childItems.index(self)
-
-        return 0
-
-class TreeModel(QAbstractItemModel):
-    """
-    Tree implemented as a linked TreeItem objects.
-    Flexible during tree creation, slow in traversal.
-    """
-    def __init__(self, rootItem, parent=None):
-        super().__init__(parent)
-
-        self.rootItem = rootItem
-
-    def columnCount(self, parent):
-        if parent.isValid():
-            return parent.internalPointer().columnCount()
-        else:
-            return self.rootItem.columnCount()
-
-    def data(self, index, role):
-        if not index.isValid():
-            return None
-
-        if role != Qt.DisplayRole:
-            return None
-
-        item = index.internalPointer()
-
-        return item.data(index.column())
-
-    def flags(self, index):
-        if not index.isValid():
-            return Qt.NoItemFlags
-
-        return Qt.ItemIsEnabled | Qt.ItemIsSelectable
-
-    def headerData(self, section, orientation, role):
-        if orientation == Qt.Horizontal and role == Qt.DisplayRole:
-            return self.rootItem.data(section)
-
-        return None
-
-    def index(self, row, column, parent):
-        if not self.hasIndex(row, column, parent):
-            return QModelIndex()
-
-        if not parent.isValid():
-            parentItem = self.rootItem
-        else:
-            parentItem = parent.internalPointer()
-
-        childItem = parentItem.child(row)
-        if childItem:
-            return self.createIndex(row, column, childItem)
-        else:
-            return QModelIndex()
-
-    def parent(self, index):
-        if not index.isValid():
-            return QModelIndex()
-
-        childItem = index.internalPointer()
-        parentItem = childItem.parent()
-
-        if parentItem == self.rootItem:
-            return QModelIndex()
-
-        return self.createIndex(parentItem.row(), 0, parentItem)
-
-    def rowCount(self, parent):
-        if parent.column() > 0:
-            return 0
-
-        if not parent.isValid():
-            parentItem = self.rootItem
-        else:
-            parentItem = parent.internalPointer()
-
-        return parentItem.childCount()
-
 @bt2.plugin_component_class
 class EventBufferSink(bt2._UserSinkComponent):
     """
@@ -145,7 +32,7 @@ class EventBufferSink(bt2._UserSinkComponent):
 
     def __init__(self, config, params, obj):
         self._port = self._add_input_port("in")
-        (self._buffer, self._treeRoot) = obj
+        (self._tableModel, self._treeModel) = obj
 
     def _user_graph_is_configured(self):
         self._it = self._create_message_iterator(self._port)
@@ -161,20 +48,23 @@ class EventBufferSink(bt2._UserSinkComponent):
                 # TODO: move out of sink + signal slot
 
                 # Parse field classes recursively
-                def parse_container(container, name, rootItem):
-                    containerItem = TreeItem( (name, type(container)._NAME), rootItem )
-                    rootItem.appendChild(containerItem)
+                def parse_field_class(field_class, name, parentItem):
+                    field_class_item = parentItem.appendItem((name, type(field_class)._NAME))
 
                     # If member is a container type, iterate over it
-                    if issubclass(type(container), collections.abc.Mapping):
-                        for member in container.values():
-                            parse_container(member.field_class, member.name, containerItem)
+                    if issubclass(type(field_class), collections.abc.Mapping):
+                        for member in field_class.values():
+                            parse_field_class(member.field_class, member.name, field_class_item)
 
-                parse_container(event_class.payload_field_class, f"{event_class.id} : {event_class.name}", self._treeRoot)
+                parse_field_class(
+                    event_class.payload_field_class,
+                    f"{event_class.id} : {event_class.name}",
+                    self._treeModel.rootItem
+                )
 
         if type(msg) == bt2._EventMessageConst:
             # Save event to buffer
-            self._buffer.append((msg.default_clock_snapshot.value, msg.event.name))
+            self._tableModel.append((msg.default_clock_snapshot.value, msg.event.name))
 
 
 # MainWindow
@@ -184,7 +74,7 @@ class MainWindow(QMainWindow):
     def __init__(self, tableModel, treeModel):
         super().__init__()
         self._tableModel = tableModel
-        self._treeModel = AppendableTreeModel(10, [('Name', 'U20'), ('Type', 'U20')])
+        self._treeModel = treeModel
 
         self.setWindowTitle("Responsive Babeltrace2 GUI demo")
 
@@ -238,7 +128,7 @@ class MainWindow(QMainWindow):
     def timerEvent(self, QTimerEvent):
 
         # Statistics
-        self._statLabel.setText(f"Events (processed/loaded): {len(self._tableModel._array)} / {self._tableModel.rowCount()}")
+        self._statLabel.setText(f"Events (processed/loaded): {len(self._tableModel._table)} / {self._tableModel.rowCount()}")
 
         # Force the view to call canFetchMore / fetchMore initially
         if not self._tableModel.rowCount():
@@ -248,7 +138,7 @@ class MainWindow(QMainWindow):
         if not self._treeViewReady and self._treeModel.hasIndex(0, 0):
             self._treeModel.modelReset.emit()
             self._treeViewReady = True
-            #self._treeView.expandAll()
+            self._treeView.expandAll()
 
         # Follow events
         if self._followCheckbox.isChecked():
@@ -265,14 +155,9 @@ def main():
 
     app = QApplication([])
 
-    # Table view data model
-    tableModel = AppendableTableModel(block_size=500, dtype_struct=[('timestamp', np.uint32), ('name', 'U35')])
-
-    # Tree view data model
-    # PyQt5-5.14.2.devX/examples/itemviews/simpletreemodel/simpletreemodel.py
-    # PyQt5-5.14.2.devX/examples/itemviews/editabletreemodel/editabletreemodel.py
-    treeModel = TreeModel(TreeItem(("Name", "Type")))
-
+    # Data models
+    tableModel = AppendableTableModel(('Timestamp', 'Name'))
+    treeModel = AppendableTreeModel(("Name", "Type"))
 
     # Create graph and add components
     graph = bt2.Graph()
@@ -287,7 +172,7 @@ def main():
 
     # Do note: event_signal is static, but it has to be accessed through instance
     # (via self.) in order to be "bound" (expose the .emit() method)
-    graph_sink = graph.add_component(EventBufferSink, 'sink', obj=(tableModel, treeModel.rootItem))
+    graph_sink = graph.add_component(EventBufferSink, 'sink', obj=(tableModel, treeModel))
 
     # Connect components together
     graph.connect_ports(
