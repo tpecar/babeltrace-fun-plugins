@@ -14,7 +14,6 @@ LIBBABELTRACE2_PLUGIN_PROVIDER_DIR = [babeltrace2 build folder]/src/python-plugi
 
 import bt2
 import collections.abc
-import numpy as np
 
 from PyQt5.Qt import *
 from PyQt5.QtWidgets import *
@@ -23,6 +22,51 @@ from PyQt5.QtWidgets import *
 from graph.event_buffer import AppendableTableModel, AppendableTreeModel
 from graph.utils import load_plugins, cmd_parser
 
+
+class CountableTreeModel(AppendableTreeModel):
+    """
+    Extended verison of AppendableTreeModel that contains additional functionality for this GUI.
+
+    Since original class instantiates objects with type(self), this will correctly reference the TreeItem of this class.
+    """
+
+    class TreeItem(AppendableTreeModel.TreeItem):
+        def __init__(self, data, parent=None):
+            super().__init__(data, parent)
+            self.count = None
+
+        def countColumn(self):
+            return super().columnCount()
+
+        def columnCount(self):
+            # if count, add additional column
+            return super().columnCount() + (1 if self.count != None else 0)
+
+        def data(self, column):
+            # if last column, return count
+            if self.countColumn() == column:
+                return self.count
+            else:
+                return super().data(column)
+
+    def __init__(self, rootItem_data, parent=None):
+        super().__init__(rootItem_data, parent)
+
+        # dict to treeModel to correlate between event id - tree item
+        self.item = {}
+
+    def add_countable(self, item, id):
+        item.count = 0
+        self.item[id] = item
+
+    def inc_countable(self, event_id):
+        item = self.item[event_id]
+        item.count += 1
+
+        # view needs to query the model and generate indexes before we can notify change
+        if item.index and len(item.index) == item.countColumn()+1:
+            itemIdx = item.index[item.countColumn()]
+            self.dataChanged.emit(itemIdx, itemIdx)
 
 @bt2.plugin_component_class
 class EventBufferSink(bt2._UserSinkComponent):
@@ -54,15 +98,18 @@ class EventBufferSink(bt2._UserSinkComponent):
                         for member in field_class.values():
                             parse_field_class(member.field_class, member.name, field_class_item)
 
-                parse_field_class(
-                    event_class.payload_field_class,
-                    f"{event_class.id} : {event_class.name}",
-                    self._treeModel.rootItem
+                    return field_class_item
+
+                event_class_item = parse_field_class(
+                    event_class.payload_field_class, f"{event_class.id} : {event_class.name}", self._treeModel.rootItem
                 )
+
+                self._treeModel.add_countable(event_class_item, event_class.id)
 
         if type(msg) == bt2._EventMessageConst:
             # Save event to buffer
             self._tableModel.append((msg.default_clock_snapshot.value, msg.event.name, str(msg.event.payload_field)))
+            self._treeModel.inc_countable(msg.event.id)
 
 # MainWindow
 #
@@ -159,7 +206,7 @@ def main():
 
     # Data models
     tableModel = AppendableTableModel(('Timestamp', 'Event', 'Payload'))
-    treeModel = AppendableTreeModel(("Name", "Type"))
+    treeModel = CountableTreeModel(("Name", "Type", "Count"))
 
     # Create graph and add components
     graph = bt2.Graph()

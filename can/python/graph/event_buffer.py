@@ -87,6 +87,9 @@ class AppendableTreeModel(QAbstractItemModel):
             self.itemData = data
             self.childItems = []
 
+            self.index = {}
+            self.parentIndex = None
+
         def child(self, row):
             return self.childItems[row]
 
@@ -116,7 +119,7 @@ class AppendableTreeModel(QAbstractItemModel):
             :param item_data: tree view columns
             :return: child item
             """
-            item = AppendableTreeModel.TreeItem(item_data, self)
+            item = type(self)(item_data, self)
             self.childItems.append(item)
             return item
 
@@ -124,7 +127,7 @@ class AppendableTreeModel(QAbstractItemModel):
     def __init__(self, rootItem_data, parent=None):
         super().__init__(parent)
 
-        self.rootItem = AppendableTreeModel.TreeItem(rootItem_data)
+        self.rootItem = type(self).TreeItem(rootItem_data)
 
     def rowCount(self, parent):
         if parent.column() > 0:
@@ -177,7 +180,11 @@ class AppendableTreeModel(QAbstractItemModel):
 
         childItem = parentItem.child(row)
         if childItem:
-            return self.createIndex(row, column, childItem)
+            # The initial view query will create index objects
+            if column not in childItem.index:
+                childItem.index[column] = self.createIndex(row, column, childItem)
+
+            return childItem.index[column]
         else:
             return QModelIndex()
 
@@ -191,4 +198,7 @@ class AppendableTreeModel(QAbstractItemModel):
         if parentItem == self.rootItem:
             return QModelIndex()
 
-        return self.createIndex(parentItem.row(), 0, parentItem)
+        if not childItem.parentIndex:
+            childItem.parentIndex = self.createIndex(parentItem.row(), 0, parentItem)
+
+        return childItem.parentIndex
