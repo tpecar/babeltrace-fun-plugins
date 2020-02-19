@@ -62,8 +62,7 @@ class EventBufferSink(bt2._UserSinkComponent):
 
         if type(msg) == bt2._EventMessageConst:
             # Save event to buffer
-            self._tableModel.append((msg.default_clock_snapshot.value, msg.event.name))
-
+            self._tableModel.append((msg.default_clock_snapshot.value, msg.event.name, str(msg.event.payload_field)))
 
 # MainWindow
 #
@@ -74,12 +73,12 @@ class MainWindow(QMainWindow):
         self._tableModel = tableModel
         self._treeModel = treeModel
 
-        self.setWindowTitle("Responsive Babeltrace2 GUI demo")
+        self.setWindowTitle("Advanced Babeltrace2 GUI demo")
 
         # Table view
         self._tableView = QTableView()
-        self._tableView.setWindowTitle("Sink data")
         self._tableView.setModel(tableModel)
+        self._tableView.loaded = False
 
         self._tableView.setEditTriggers(QTableWidget.NoEditTriggers)    # read-only
         self._tableView.verticalHeader().setDefaultSectionSize(10)      # row height
@@ -88,9 +87,8 @@ class MainWindow(QMainWindow):
         # Tree view
         self._treeView = QTreeView()
         self._treeView.setModel(self._treeModel)
-        self._treeViewReady = False
 
-        self._treeView.setUniformRowHeights(True)
+        self._treeView.setUniformRowHeights(True)  # https://doc.qt.io/qt-5/qtreeview.html#uniformRowHeights-prop
 
         # Statistics label
         self._statLabel = QLabel("Events (processed/loaded): - / -")
@@ -101,15 +99,20 @@ class MainWindow(QMainWindow):
 
         # Layout
         self._layout = QGridLayout()
+        self._splitter = QSplitter()
 
         # See https://doc.qt.io/qt-5/qgridlayout.html#addWidget-2
         #
-        #    0           1
-        # 0 [< treeView ] [< tableView     ]
-        # 1 [< statLabel] [followCheckbox >]
+        #   0               1
+        # 0 [ QSplitter                        ]
+        #   [ [< treeView ] [< tableView     ] ]
         #
-        self._layout.addWidget(self._treeView,  0, 0)
-        self._layout.addWidget(self._tableView, 0, 1)
+        # 1 [< statLabel  ] [followCheckbox   >]
+        #
+        self._splitter.addWidget(self._treeView)
+        self._splitter.addWidget(self._tableView)
+        self._layout.addWidget(self._splitter, 0, 0, 1, 2)
+
         self._layout.addWidget(self._statLabel, 1, 0)
         self._layout.addWidget(self._followCheckbox, 1, 1, 1, 1, Qt.AlignRight)
 
@@ -117,6 +120,11 @@ class MainWindow(QMainWindow):
         self._mainWidget.setLayout(self._layout)
 
         self.setCentralWidget(self._mainWidget)
+
+        # Widget sizes
+        self._splitter.setStretchFactor(0, 45)
+        self._splitter.setStretchFactor(1, 55)
+        self.resize(750, 450)
 
     # Timer handler, provided by QObject
     # https://doc.qt.io/qt-5/qtimer.html#alternatives-to-qtimer
@@ -126,11 +134,19 @@ class MainWindow(QMainWindow):
         # Statistics
         self._statLabel.setText(f"Events (processed/loaded): {len(self._tableModel._table)} / {self._tableModel.rowCount()}")
 
+        # Signal views to start fetching model data
+        if not self._tableView.loaded and self._treeModel.rowCount(QModelIndex()):
+            self._treeModel.modelReset.emit()
+            self._treeView.resizeColumnToContents(0)
+            self._tableView.loaded = True
+
+        if not self._tableModel.rowCount():
+            self._tableModel.modelReset.emit()
+
         # Follow events
         if self._followCheckbox.isChecked():
-            # The following could be achieved similarly with self._tableView.scrollToBottom(), but that method has
-            # issues with skipping multiple rows - rows appear to "bounce" and it's hard to look at the output
-            #
+            # QTableView also provides scrollToBottom(), but that method seems to have issues
+            # with skipping multiple rows - rows appear to "bounce"
             self._tableView.scrollTo(self._tableModel.index(self._tableModel.rowCount() - 1, 0), QAbstractItemView.PositionAtBottom)
 
 
@@ -142,7 +158,7 @@ def main():
     app = QApplication([])
 
     # Data models
-    tableModel = AppendableTableModel(('Timestamp', 'Name'))
+    tableModel = AppendableTableModel(('Timestamp', 'Event', 'Payload'))
     treeModel = AppendableTreeModel(("Name", "Type"))
 
     # Create graph and add components

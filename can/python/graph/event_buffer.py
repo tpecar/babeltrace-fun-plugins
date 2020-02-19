@@ -45,6 +45,8 @@ class AppendableTableModel(QAbstractTableModel):
         if role == Qt.DisplayRole:
             if orientation == Qt.Horizontal and section < len(self._data_headers):
                 return self._data_headers[section]
+            if orientation == Qt.Vertical:
+                return section
         return None
 
     def canFetchMore(self, index):
