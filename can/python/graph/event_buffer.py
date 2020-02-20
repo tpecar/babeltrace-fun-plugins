@@ -90,6 +90,11 @@ class AppendableTreeModel(QAbstractItemModel):
             self.index = {}
             self.parentIndex = None
 
+        def indexReady(self):
+            # View needs to query the model and generate QModelIndex objects for data columns, before we can notify
+            # the view of item data change.
+            return self.index and len(self.index) == len(self.itemData)
+
         def child(self, row):
             return self.childItems[row]
 

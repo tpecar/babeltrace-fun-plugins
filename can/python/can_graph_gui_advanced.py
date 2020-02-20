@@ -13,6 +13,7 @@ LIBBABELTRACE2_PLUGIN_PROVIDER_DIR = [babeltrace2 build folder]/src/python-plugi
 """
 
 import bt2
+import types
 import collections.abc
 
 from PyQt5.Qt import *
@@ -23,7 +24,7 @@ from graph.event_buffer import AppendableTableModel, AppendableTreeModel
 from graph.utils import load_plugins, cmd_parser
 
 
-class CountableTreeModel(AppendableTreeModel):
+class EventClassTreeModel(AppendableTreeModel):
     """
     Extended verison of AppendableTreeModel that contains additional functionality for this GUI.
 
@@ -35,19 +36,22 @@ class CountableTreeModel(AppendableTreeModel):
             super().__init__(data, parent)
             self.count = None
 
-        def countColumn(self):
-            return super().columnCount()
-
-        def columnCount(self):
-            # if count, add additional column
-            return super().columnCount() + (1 if self.count != None else 0)
-
         def data(self, column):
-            # if last column, return count
-            if self.countColumn() == column:
-                return self.count
+            # if the element is a function, return the result of this function
+            data_obj = super().data(column)
+
+            if isinstance(data_obj, types.FunctionType):
+                return data_obj()
             else:
-                return super().data(column)
+                return data_obj
+
+        # Recursively updates the model with payload from event message
+        #def update_model(self, payload_field):
+
+        # count_update
+        # field_update
+        # update model klice eno izemd teh
+
 
     def __init__(self, rootItem_data, parent=None):
         super().__init__(rootItem_data, parent)
@@ -55,17 +59,18 @@ class CountableTreeModel(AppendableTreeModel):
         # dict to treeModel to correlate between event id - tree item
         self.item = {}
 
-    def add_countable(self, item, id):
+    def reg_event_class(self, item, id):
         item.count = 0
+        item.itemData.append(lambda : item.count)
+
         self.item[id] = item
 
     def inc_countable(self, event_id):
         item = self.item[event_id]
         item.count += 1
 
-        # view needs to query the model and generate indexes before we can notify change
-        if item.index and len(item.index) == item.countColumn()+1:
-            itemIdx = item.index[item.countColumn()]
+        if item.indexReady():
+            itemIdx = list(item.index.values())[-1]
             self.dataChanged.emit(itemIdx, itemIdx)
 
 @bt2.plugin_component_class
@@ -89,22 +94,82 @@ class EventBufferSink(bt2._UserSinkComponent):
             # Parse event classes
             for event_class in msg.stream.cls.values():
 
-                # Parse field classes recursively
-                def parse_field_class(field_class, name, parentItem):
-                    field_class_item = parentItem.appendItem((name, type(field_class)._NAME))
+                # Event class payload field parsing
+                #
+                # More info:
+                #
+                # Common Trace Format (CTF) documentation
+                #   https://diamon.org/ctf/
+                #
+                # C documentation for Stream / Event / Field classes
+                #   https://babeltrace.org/docs/v2.0/libbabeltrace2/group__api-tir-stream-cls.html
+                #   https://babeltrace.org/docs/v2.0/libbabeltrace2/group__api-tir-ev-cls.html
+                #   https://babeltrace.org/docs/v2.0/libbabeltrace2/group__api-tir-ev-cls.html#api-tir-ev-cls-prop-p-fc
+                #   https://babeltrace.org/docs/v2.0/libbabeltrace2/group__api-tir-fc.html
+                #
+                # Python wrapper
+                #   babeltrace-2.0.0/src/bindings/python/bt2/bt2/stream_class.py
+                #   babeltrace-2.0.0/src/bindings/python/bt2/bt2/field_class.py
+                #
+                # text.details sink source
+                #   babeltrace-2.0.0/src/plugins/text/details/write.c
+                #       static void write_stream_class(struct details_write_ctx *ctx, const bt_stream_class *sc) definition
+                #       static void write_event_class(struct details_write_ctx *ctx, const bt_event_class *ec) definition
+                #       static void write_field_class(struct details_write_ctx *ctx, const bt_field_class *fc) definition
+                #
+                # The general idea:                Notation: (  is a field_class.py : _FIELD_CLASS_TYPE_TO_OBJ )
+                #                                            [[ is an abc.Mapping ]]
+                #
+                #   event_class (_EventClass)
+                #        |
+                #    has ---> payload_field_class (_[X]FieldClass)
+                #                 |
+                #              is |----> scalar field type
+                #                 |            |
+                #                 |     can be | ---> Boolean           (_BoolFieldClass)
+                #                 |            OR --> Bit array         (_BitArrayFieldClass)
+                #                 |            OR --> Integer           (_UnsignedIntegerFieldClass / _SignedIntegerFieldClass)
+                #                 |            OR --> [[ Enumeration ]] (_UnsignedEnumerationFieldClass / _SignedEnumerationFieldClass)
+                #                 OR           |
+                #                 |            |
+                #                 |            OR --> Real              (_SinglePrecisionRealFieldClass / _DoublePrecisionRealFieldClass)
+                #                 |            OR --> String            (_StringFieldClass)
+                #                 |
+                #                 |
+                #                 -----> container field type
+                #                              |
+                #                       can be | ---> Array             (_StaticArrayFieldClass / _DynamicArrayFieldClass / _DynamicArrayWithLengthFieldFieldClass)
+                #                              OR --> [[ Structure ]]   (_StructureFieldClass)
+                #                              |
+                #                              |
+                #                              OR --> Option            (_OptionFieldClass / _OptionWithBoolSelectorFieldClass / _OptionWithUnsignedIntegerSelectorFieldClass / _OptionWithSignedIntegerSelectorFieldClass)
+                #                              OR --> [[ Variant ]]     (_VariantFieldClassWithoutSelector / _VariantFieldClassWithUnsignedIntegerSelector / _VariantFieldClassWithSignedIntegerSelector)
+                #
 
-                    # If member is a container type, iterate over it
-                    if issubclass(type(field_class), collections.abc.Mapping):
-                        for member in field_class.values():
-                            parse_field_class(member.field_class, member.name, field_class_item)
-
-                    return field_class_item
-
-                event_class_item = parse_field_class(
-                    event_class.payload_field_class, f"{event_class.id} : {event_class.name}", self._treeModel.rootItem
+                # Create node with update_model handler for event class
+                event_class_item = self._treeModel.rootItem.appendItem(
+                    (f"{event_class.id} : {event_class.name}", type(event_class)._NAME)
                 )
 
-                self._treeModel.add_countable(event_class_item, event_class.id)
+                # Parse field classes recursively
+                def parse_field_class(parent_field_class, parent_item):
+
+                    # Container type
+                    if issubclass(type(parent_field_class), collections.abc.Mapping):
+
+                        # Create node with update_model handler for container type
+                        field_class_item = parent_item.appendItem((name, type(parent_field_class)._NAME))
+
+                        # Recursively parse its members
+                        for member in parent_field_class.values():
+                            parse_field_class(member.field_class, member.name, field_class_item)
+
+                    # Scalar type
+                    else:
+                        # Create node with update_model handler for scalar type
+                        field_class_item = parent_item.appendItem((name, type(parent_field_class)._NAME))
+
+                parse_field_class(event_class.payload_field_class, event_class_item)
 
         if type(msg) == bt2._EventMessageConst:
             # Save event to buffer
@@ -206,7 +271,7 @@ def main():
 
     # Data models
     tableModel = AppendableTableModel(('Timestamp', 'Event', 'Payload'))
-    treeModel = CountableTreeModel(("Name", "Type", "Count"))
+    treeModel = EventClassTreeModel(("Name", "Type", "Count / Last Value"))
 
     # Create graph and add components
     graph = bt2.Graph()
