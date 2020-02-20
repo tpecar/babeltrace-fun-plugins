@@ -186,6 +186,7 @@ class AppendableTreeModel(QAbstractItemModel):
         childItem = parentItem.child(row)
         if childItem:
             # The initial view query will create index objects
+            # Do note that nodes should not be moved / deleted!
             if column not in childItem.index:
                 childItem.index[column] = self.createIndex(row, column, childItem)
 
