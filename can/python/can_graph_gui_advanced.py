@@ -15,8 +15,6 @@ LIBBABELTRACE2_PLUGIN_PROVIDER_DIR = [babeltrace2 build folder]/src/python-plugi
 import bt2
 from bt2 import field_class
 
-import functools
-
 from PyQt5.Qt import *
 from PyQt5.QtWidgets import *
 
@@ -177,24 +175,21 @@ class EventBufferSink(bt2._UserSinkComponent):
             for event_class in msg.stream.cls.values():
 
                 # Parse field classes + attach update handlers recursively
-                def parse_field_class(parent_item, child_class, child_columns):
+                def parse_field_class(parent_item, child_class, child_columns): # add wrapper_handler - do that the parent can affect the childs handler - it gets the childs handler as an argument
 
                     class_item = parent_item.appendItem(child_columns)
 
-                    if functools.reduce(
-                        lambda first, second : first or issubclass(type(child_class), second),
-                        (
-                            field_class._BoolFieldClassConst,
-                            field_class._BitArrayFieldClassConst,
-                            field_class._IntegerFieldClassConst,
-                            field_class._RealFieldClassConst,
-                            field_class._StringFieldClassConst
-                        ), False
-                    ):
-                        def update_scalar(item, payload):
-                            item.setValue(payload)
+                    if any([issubclass(type(child_class), c) for c in (
+                        field_class._BoolFieldClassConst,
+                        field_class._BitArrayFieldClassConst,
+                        field_class._IntegerFieldClassConst,
+                        field_class._RealFieldClassConst,
+                        field_class._StringFieldClassConst
+                    )]):
+                        def update_scalar(payload):
+                            class_item.setValue(payload)
                             return None  # No subelements, so no update view handler
-                        return (class_item, lambda payload : update_scalar(class_item, payload))
+                        return (class_item, update_scalar)
 
                     elif type(child_class) == field_class._EnumerationFieldClassConst:
                         # item     -> enum current state
@@ -206,17 +201,17 @@ class EventBufferSink(bt2._UserSinkComponent):
                                 [member.name, type(member.field_class)._NAME, None,     None]
                             )
 
-                        def update_enum(item, payload):
-                            item.setValue(payload) # TODO
-                        return (class_item, lambda payload : update_enum(class_item, payload))
+                        def update_enum(payload):
+                            class_item.setValue(payload) # TODO
+                        return (class_item, update_enum)
 
                     elif type(child_class) == field_class._ArrayFieldClass:
                         # item     -> length, (checksum ?)
                         # children -> array elements
                         # In case of dynamic arrays, the number of children can change! (Tree is modified!)
-                        def update_array(item, payload):
-                            item.setValue(payload) # TODO
-                        return (class_item, lambda payload : update_array(class_item, payload))
+                        def update_array(payload):
+                            class_item.setValue(payload) # TODO
+                        return (class_item, update_array)
 
                     elif type(child_class) == field_class._StructureFieldClassConst:
                         # item      -> (checksum ?)
@@ -233,25 +228,25 @@ class EventBufferSink(bt2._UserSinkComponent):
                                 )[1] # handler only
                             )
 
-                        def update_struct(sub_handler, payload):
+                        def update_struct(payload):
                             # Update members
                             for shp in zip(sub_handler, payload.values()):
                                 shp[0](shp[1]) # sub handler for payload member ( payload member instance )
-                        return (class_item, lambda payload : update_struct(sub_handler, payload))
+                        return (class_item, update_struct)
 
                     elif type(child_class) == field_class._OptionFieldClassConst:
                         # item   -> option enabled
                         # child  -> option data struct, with values displayed if enabled
-                        def update_option(item, payload):
-                            item.setValue(payload) # TODO
-                        return (class_item, lambda payload : update_option(class_item, payload))
+                        def update_option(payload):
+                            class_item.setValue(payload) # TODO
+                        return (class_item, update_option)
 
                     elif type(child_class) == field_class._VariantFieldClassConst:
                         # item      -> data struct selection
                         # children  -> all variant data structs, selected one has values displayed
-                        def update_variant(item, payload):
-                            item.setValue(payload) # TODO
-                        return (class_item, lambda payload : update_variant(class_item))
+                        def update_variant(payload):
+                            class_item.setValue(payload) # TODO
+                        return (class_item, update_variant)
 
                     else:
                         print(f"{type(child_class)} not handled!")
@@ -263,14 +258,41 @@ class EventBufferSink(bt2._UserSinkComponent):
                     [event_class.name, type(event_class.payload_field_class)._NAME, 0,        '']
                 )
 
-                # Agument the payload handler with counting functionality
+                # Augment the payload handler with counting functionality
                 # Toplevel field class (event_class.payload_field_class) is in the same row as event class
-                def update_event_class(item, child_update_handler, payload):
+                def update_event_class(payload):
+
+                    # Since people usually stop at "closures in python are late binding", with no explanation why,
+                    # I want to elaborate on this:
+                    #
+                    #   When you define a function / lambda that uses a variable from an outside scope,
+                    #   the variable from outside scope is a 'lexically bound free variable'
+                    #   - it references (not copies!) the variable (not the object!) in the outer scope.
+                    #
+                    #   A function
+                    #       1. can outlive the scope of its free variables,
+                    #       2. has to reference the variable of the outer scope, possibly even modify it
+                    #          (that is, change the object the variable points to) with the modified variable
+                    #          (new object) available in the outer scope itself,
+                    #   Python supports both by storing the variable-to-object mapping (cell object) of the variable
+                    #   in the __closure__ attribute of the defined function.
+                    #
+                    #   Consequentially, all functions that use the same out-of-scope variable will have the same
+                    #   variable-to-object mapping, which means that
+                    #       - the variable will reference the same object in all functions
+                    #       - the assignment to the variable, be it in the function or
+                    #         through an assignment in the original scope, or sub-scopes, will be seen in all functions
+                    #
+                    # More info:
+                    #   https://stackoverflow.com/questions/12919278/how-to-define-free-variable-in-python
+                    #   https://www.python.org/dev/peps/pep-0227/
+                    #
+
                     item.setCount(item.getCount()+1)
-                    child_update_handler(payload)
+                    update_handler(payload)
 
                 # Add update handler for event class as closure
-                self._treeModel.update[event_class.id] = lambda payload : update_event_class(item, update_handler, payload)
+                self._treeModel.update[event_class.id] = update_event_class
 
         if type(msg) == bt2._EventMessageConst:
             # Save event to buffer
