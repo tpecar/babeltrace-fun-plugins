@@ -13,8 +13,9 @@ LIBBABELTRACE2_PLUGIN_PROVIDER_DIR = [babeltrace2 build folder]/src/python-plugi
 """
 
 import bt2
-import types
-import collections.abc
+from bt2 import field_class
+
+import functools
 
 from PyQt5.Qt import *
 from PyQt5.QtWidgets import *
@@ -37,15 +38,26 @@ class EventClassTreeModel(AppendableTreeModel):
             self.model = model
             self.update = None              # Set up @ bt2._StreamBeginningMessageConst - dej stran
 
-        def getState(self):
-            return self.itemData[2]         # [2] is the "Count / Last Value" column
+        def getCount(self):
+            return self.itemData[2]
 
-        def setState(self, state):
+        def setCount(self, state):
             self.itemData[2] = state
 
             # Notify view
             if self.indexReady():
                 itemIdx = self.index[2]
+                self.model.dataChanged.emit(itemIdx, itemIdx)
+
+        def getValue(self):
+            return self.itemData[3]
+
+        def setValue(self, state):
+            self.itemData[3] = state
+
+            # Notify view
+            if self.indexReady():
+                itemIdx = self.index[3]
                 self.model.dataChanged.emit(itemIdx, itemIdx)
 
         def appendItem(self, item_data):
@@ -57,8 +69,8 @@ class EventClassTreeModel(AppendableTreeModel):
         super().__init__(rootItem_data, parent)
         self.rootItem.model = self
 
-        # event id -> event class TreeItem
-        self.event_class_item = {}
+        # event id -> model update handler
+        self.update = {}
 
 @bt2.plugin_component_class
 class EventBufferSink(bt2._UserSinkComponent):
@@ -103,7 +115,7 @@ class EventBufferSink(bt2._UserSinkComponent):
         #
         # The general idea:                Notation: (  is a field_class.py : _FIELD_CLASS_TYPE_TO_CONST_OBJ )
         #                                            [[ is an abc.Mapping ]]
-        #   event_class ( _EventClass )
+        #   event_class ( _EventClassConst )
         #        |
         #    has ---> payload_field_class ( _[X]FieldClass )    <------------------------------------------------- <
         #               |                                                                                          |
@@ -164,77 +176,106 @@ class EventBufferSink(bt2._UserSinkComponent):
             # Parse event classes
             for event_class in msg.stream.cls.values():
 
-                # Create node with update_model handler for event class
-                event_class_item = self._treeModel.rootItem.appendItem(
-                    [f"{event_class.id} : {event_class.name}", event_class.name, 0]
-                )
-
-                # We use closures to bind the model update handler back to the tree item
-                # We use attributes attached bound to the handler function itself to recursively call update handlers
-                def update_event_class_closure():
-                    def update_event_class(payload):
-                        event_class_item.setState(event_class_item.getState() + 1)
-
-                        # Recursively call update handlers for field classes
-                        # The called update handler should have the capability to iterate over input if the provided
-                        # payload is a map.
-                        update_event_class.update(payload.payload_field)
-                    return update_event_class
-
-                # ker vracamo zdaj handlerje z returni, je ta lahko tehnicno za parse_field_class
-
-                event_class_item.update = update_event_class_closure()
-
                 # Parse field classes + attach update handlers recursively
-                def parse_field_class(name, parent_field_class, parent_item):
+                def parse_field_class(parent_item, child_class, child_columns):
 
-                    field_class_item = parent_item.appendItem([name, type(parent_field_class)._NAME, '-'])
+                    class_item = parent_item.appendItem(child_columns)
 
-                    # abc.Mapping type
-                    # TODO: check if a different model would be better for handling container types
-                    if issubclass(type(parent_field_class), collections.abc.Mapping):
-                        # Create node with update_model handler for specific container type
-                        # [[ Enumeration ]] -> parent displays type + state, children display possible states
-                        # [[ Structure ]]   -> parent displays type, children display type + state
-                        # [[ Variant ]]     -> parent displays type + selected variant, children are
-                        #                           possible representations, selected representation displays state
-                        # TODO: field_class_item for children has to be initialized differently depending
-                        #   on whether the parent is a enum / struct / variant.
-                        # This is a PoC for structs only right now.
+                    if functools.reduce(
+                        lambda first, second : first or issubclass(type(child_class), second),
+                        (
+                            field_class._BoolFieldClassConst,
+                            field_class._BitArrayFieldClassConst,
+                            field_class._IntegerFieldClassConst,
+                            field_class._RealFieldClassConst,
+                            field_class._StringFieldClassConst
+                        ), False
+                    ):
+                        def update_scalar(item, payload):
+                            item.setValue(payload)
+                            return None  # No subelements, so no update view handler
+                        return (class_item, lambda payload : update_scalar(class_item, payload))
 
-                        # Recursively parse its members
-                        handlers = []
-                        for member in parent_field_class.values():
-                            handlers.append(parse_field_class(member.name, member.field_class, field_class_item))
+                    elif type(child_class) == field_class._EnumerationFieldClassConst:
+                        # item     -> enum current state
+                        # children -> fixed value, possible enum states
+                        for member in child_class.values():
+                            parse_field_class(
+                                class_item, member.field_class,
+                                # "Name",     "Type",                         "Count", "Last Value"
+                                [member.name, type(member.field_class)._NAME, None,     None]
+                            )
 
-                        # Create a handler that calls its childrens handlers
-                        def map_field_handler(payload):
-                            for hp in zip(handlers, payload.values()):
-                                hp[0](hp[1])
-                            # Currently we don't use our item here - when we will have enums, etc, we will update
-                            # the current state
+                        def update_enum(item, payload):
+                            item.setValue(payload) # TODO
+                        return (class_item, lambda payload : update_enum(class_item, payload))
 
-                        # Return handler (closure)
-                        return map_field_handler
+                    elif type(child_class) == field_class._ArrayFieldClass:
+                        # item     -> length, (checksum ?)
+                        # children -> array elements
+                        # In case of dynamic arrays, the number of children can change! (Tree is modified!)
+                        def update_array(item, payload):
+                            item.setValue(payload) # TODO
+                        return (class_item, lambda payload : update_array(class_item, payload))
 
-                    # non-abc.Mapping type
+                    elif type(child_class) == field_class._StructureFieldClassConst:
+                        # item      -> (checksum ?)
+                        # children  -> structure elements
+
+                        sub_handler = []
+
+                        for member in child_class.values():
+                            sub_handler.append(
+                                parse_field_class(
+                                    class_item, member.field_class,
+                                    # "Name",     "Type",                         "Count", "Last Value"
+                                    [member.name, type(member.field_class)._NAME, None,     '-']
+                                )[1] # handler only
+                            )
+
+                        def update_struct(sub_handler, payload):
+                            # Update members
+                            for shp in zip(sub_handler, payload.values()):
+                                shp[0](shp[1]) # sub handler for payload member ( payload member instance )
+                        return (class_item, lambda payload : update_struct(sub_handler, payload))
+
+                    elif type(child_class) == field_class._OptionFieldClassConst:
+                        # item   -> option enabled
+                        # child  -> option data struct, with values displayed if enabled
+                        def update_option(item, payload):
+                            item.setValue(payload) # TODO
+                        return (class_item, lambda payload : update_option(class_item, payload))
+
+                    elif type(child_class) == field_class._VariantFieldClassConst:
+                        # item      -> data struct selection
+                        # children  -> all variant data structs, selected one has values displayed
+                        def update_variant(item, payload):
+                            item.setValue(payload) # TODO
+                        return (class_item, lambda payload : update_variant(class_item))
+
                     else:
-                        # Create node with update_model handler for non-mapping type
-                        # TODO: We only handle scalars here, but there can be non-mapping container types (arrays)
-                        def non_map_field_handler(payload): # To bi lahko z lambdami naredil
-                            field_class_item.setState(payload)
-                        return non_map_field_handler
+                        print(f"{type(child_class)} not handled!")
 
                 # Attach update handler from the child to parent, so that the parent can call it
-                event_class_item.update.update = parse_field_class("payload", event_class.payload_field_class, event_class_item)
-                # to lahko naredimo drugace, ker je lahko za podelementom, in ker itak delamo closure, damo to kot argument v funkcijo k vraca closure
+                (item, update_handler) = parse_field_class(
+                    self._treeModel.rootItem, event_class.payload_field_class,
+                    # "Name",          "Type",                                      "Count", "Last Value"
+                    [event_class.name, type(event_class.payload_field_class)._NAME, 0,        '']
+                )
 
-                self._treeModel.event_class_item[event_class.id] = event_class_item # tehnicno bi lahko klicali handler direkt
+                # Agument the payload handler with counting functionality
+                # Toplevel field class (event_class.payload_field_class) is in the same row as event class
+                def update_event_class(item, child_update_handler, payload):
+                    item.setCount(item.getCount()+1)
+                    child_update_handler(payload)
+
+                # Add update handler for event class as closure
+                self._treeModel.update[event_class.id] = lambda payload : update_event_class(item, update_handler, payload)
 
         if type(msg) == bt2._EventMessageConst:
             # Save event to buffer
             self._tableModel.append((msg.default_clock_snapshot.value, msg.event.name, str(msg.event.payload_field)))
-            self._treeModel.event_class_item[msg.event.id].update(msg.event)
+            self._treeModel.update[msg.event.id](msg.event.payload_field)
 
 # MainWindow
 #
@@ -331,7 +372,7 @@ def main():
 
     # Data models
     tableModel = AppendableTableModel(('Timestamp', 'Event', 'Payload'))
-    treeModel = EventClassTreeModel(("Name", "Type", "Count / Last Value"))
+    treeModel = EventClassTreeModel(("Name", "Type", "Count", "Last Value"))
 
     # Create graph and add components
     graph = bt2.Graph()
