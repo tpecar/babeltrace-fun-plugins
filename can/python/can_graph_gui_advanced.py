@@ -206,8 +206,8 @@ class EventBufferSink(bt2._UserSinkComponent):
                         for member in child_class.values():
                             parse_field_class(
                                 class_item, member.field_class,
-                                # "Name",     "Type",                         "Count", "Last Value"
-                                [member.name, type(member.field_class)._NAME, '-',     '-']
+                                # "Name",     "Type",                             "Count", "Last Value"
+                                [member.name, type(member.field_class)._NAME[6:], '',      '-']
                             )
 
                         def update_enum(payload):
@@ -232,8 +232,8 @@ class EventBufferSink(bt2._UserSinkComponent):
                             sub_handler.append(
                                 parse_field_class(
                                     class_item, member.field_class,
-                                    # "Name",     "Type",                         "Count", "Last Value"
-                                    [member.name, type(member.field_class)._NAME, '-',     '-']
+                                    # "Name",     "Type",                             "Count", "Last Value"
+                                    [member.name, type(member.field_class)._NAME[6:], '',      '-']
                                 )[1] # handler only
                             )
 
@@ -265,8 +265,9 @@ class EventBufferSink(bt2._UserSinkComponent):
                 # Attach update handler from the child to parent, so that the parent can call it
                 (item, update_handler) = parse_field_class(
                     self._treeModel.invisibleRootItem(), event_class.payload_field_class,
-                    # "Name",                                  "Type",                                      "Count", "Last Value"
-                    [f"{event_class.id} : {event_class.name}", type(event_class.payload_field_class)._NAME, '0',     '-']
+                    # "Name",                                  "Type",                                          "Count", "Last Value"
+                    [f"{event_class.id} : {event_class.name}", type(event_class.payload_field_class)._NAME[6:], '0',     '-']
+                    # Do note that for "Type", we actually strip the "Const" prefix to shorten the column
                 )
 
                 # Augment the payload handler with counting functionality
