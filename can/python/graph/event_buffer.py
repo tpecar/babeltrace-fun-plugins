@@ -67,6 +67,10 @@ class AppendableTableModel(QAbstractTableModel):
         """
         self._table.append(item_data)
 
+        # If first element, notify view so that it starts updating
+        if len(self._table) == 1:
+            self.modelReset.emit()
+
 
 class AppendableTreeModel(QAbstractItemModel):
     """

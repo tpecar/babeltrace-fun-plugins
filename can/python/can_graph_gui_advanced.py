@@ -264,6 +264,8 @@ class EventBufferSink(bt2._UserSinkComponent):
                             )
 
                         def update_struct(payload):
+                            # Update in-line info for container
+                            class_item.setValue(str(payload))
                             # Update members
                             for shp in zip(sub_handler, payload.values()):
                                 shp[0](shp[1]) # sub handler for payload member ( payload member instance )
@@ -289,8 +291,8 @@ class EventBufferSink(bt2._UserSinkComponent):
                 # Attach update handler from the child to parent, so that the parent can call it
                 (item, update_handler) = parse_field_class(
                     self._treeModel.rootItem, event_class.payload_field_class,
-                    # "Name",          "Type",                                      "Count", "Last Value"
-                    [event_class.name, type(event_class.payload_field_class)._NAME, 0,        '-']
+                    # "Name",                               "Type",                                      "Count", "Last Value"
+                    [f"{event_class.id} {event_class.name}", type(event_class.payload_field_class)._NAME, 0,        '-']
                 )
 
                 # Augment the payload handler with counting functionality
@@ -305,6 +307,9 @@ class EventBufferSink(bt2._UserSinkComponent):
 
                 # Add update handler for event class as closure
                 self._treeModel.update[event_class.id] = update_event_class
+
+            # Notify view that the _treeModel changed
+            self._treeModel.modelReset.emit()
 
         if type(msg) == bt2._EventMessageConst:
             # Save event to buffer
@@ -333,9 +338,9 @@ class MainWindow(QMainWindow):
         # Tree view
         self._treeView = QTreeView()
         self._treeView.setModel(self._treeModel)
-        self._treeView.loaded = False
-
+        self._treeModel.modelReset.connect(self._treeViewModelReset)
         self._treeView.setUniformRowHeights(True)  # https://doc.qt.io/qt-5/qtreeview.html#uniformRowHeights-prop
+        self._treeView.header().setSectionResizeMode(QHeaderView.ResizeToContents) # Resize automatically (used @ init)
 
         # Statistics label
         self._statLabel = QLabel("Events (processed/loaded): - / -")
@@ -373,6 +378,14 @@ class MainWindow(QMainWindow):
         self._splitter.setStretchFactor(1, 45)
         self.resize(850, 450)
 
+    @pyqtSlot()
+    def _treeViewModelReset(self):
+        # Pre-set up column width to fit all sub-item content + prevent the user from moving/resizing columns
+        self._treeView.expandAll()
+        self._treeView.header().setSectionResizeMode(QHeaderView.Fixed)
+        self._treeView.header().setSectionsMovable(False)
+        self._treeView.collapseAll()
+
     # Timer handler, provided by QObject
     # https://doc.qt.io/qt-5/qtimer.html#alternatives-to-qtimer
     @pyqtSlot()
@@ -380,18 +393,6 @@ class MainWindow(QMainWindow):
 
         # Statistics
         self._statLabel.setText(f"Events (processed/loaded): {len(self._tableModel._table)} / {self._tableModel.rowCount()}")
-
-        # Signal views to start fetching model data
-        if not self._treeView.loaded and self._treeModel.rowCount(QModelIndex()):
-            self._treeModel.modelReset.emit()
-            self._treeView.expandAll()
-            self._treeView.resizeColumnToContents(0)
-            self._treeView.resizeColumnToContents(1)
-            self._treeView.resizeColumnToContents(2)
-            self._treeView.loaded = True
-
-        if not self._tableModel.rowCount():
-            self._tableModel.modelReset.emit()
 
         # Follow events
         if self._followCheckbox.isChecked():
