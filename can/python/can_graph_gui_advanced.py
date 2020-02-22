@@ -174,11 +174,12 @@ class EventBufferSink(bt2._UserSinkComponent):
                     ]
                     parent_item.appendRow(column_items)
 
+                    # Set monospaced font for "last_value" column, for easier value comparison
+                    class_item.last_value.setFont(QFont("Monospace"))
+
                     if any([issubclass(type(child_class), cls) for cls in (
                         field_class._BoolFieldClassConst,
                         field_class._BitArrayFieldClassConst,
-                        field_class._IntegerFieldClassConst,
-                        field_class._RealFieldClassConst,
                         field_class._StringFieldClassConst
                     )]):
                         def update_scalar(payload):
@@ -186,6 +187,18 @@ class EventBufferSink(bt2._UserSinkComponent):
                             class_item.last_value.setText(str(payload))
                             return None  # No subelements, so no update view handler
                         return (class_item, update_scalar)
+
+                    elif issubclass(type(child_class), field_class._IntegerFieldClassConst):
+                        def update_integer(payload):
+                            class_item.last_value.setText(f"{int(payload):6}")
+                            return None
+                        return (class_item, update_integer)
+
+                    elif issubclass(type(child_class), field_class._RealFieldClassConst):
+                        def update_integer(payload):
+                            class_item.last_value.setText("{:9.3f}".format(float(payload)))
+                            return None
+                        return (class_item, update_integer)
 
                     elif type(child_class) == field_class._EnumerationFieldClassConst:
                         # item     -> enum current state
@@ -253,7 +266,7 @@ class EventBufferSink(bt2._UserSinkComponent):
                 (item, update_handler) = parse_field_class(
                     self._treeModel.invisibleRootItem(), event_class.payload_field_class,
                     # "Name",                                  "Type",                                      "Count", "Last Value"
-                    [f"{event_class.id} : {event_class.name}", type(event_class.payload_field_class)._NAME, 0,        '-']
+                    [f"{event_class.id} : {event_class.name}", type(event_class.payload_field_class)._NAME, '0',     '-']
                 )
 
                 # Augment the payload handler with counting functionality
