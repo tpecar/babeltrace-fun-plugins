@@ -19,56 +19,9 @@ from PyQt5.Qt import *
 from PyQt5.QtWidgets import *
 
 # import local modules
-from graph.event_buffer import AppendableTableModel, AppendableTreeModel
+from graph.event_buffer import AppendableTableModel
 from graph.utils import load_plugins, cmd_parser
 
-
-class EventClassTreeModel(AppendableTreeModel):
-    """
-    Extended verison of AppendableTreeModel that contains additional functionality for this GUI.
-
-    Since original class instantiates objects with type(self), this will correctly reference the TreeItem of this class.
-    """
-
-    class TreeItem(AppendableTreeModel.TreeItem):
-        def __init__(self, data, parent=None, model=None):
-            super().__init__(data, parent)
-            self.model = model
-            self.update = None              # Set up @ bt2._StreamBeginningMessageConst - dej stran
-
-        def getCount(self):
-            return self.itemData[2]
-
-        def setCount(self, state):
-            self.itemData[2] = state
-
-            # Notify view
-            if self.indexReady():
-                itemIdx = self.index[2]
-                self.model.dataChanged.emit(itemIdx, itemIdx)
-
-        def getValue(self):
-            return self.itemData[3]
-
-        def setValue(self, state):
-            self.itemData[3] = state
-
-            # Notify view
-            if self.indexReady():
-                itemIdx = self.index[3]
-                self.model.dataChanged.emit(itemIdx, itemIdx)
-
-        def appendItem(self, item_data):
-            item = type(self)(item_data, self, self.model)
-            self.childItems.append(item)
-            return item
-
-    def __init__(self, rootItem_data, parent=None):
-        super().__init__(rootItem_data, parent)
-        self.rootItem.model = self
-
-        # event id -> model update handler
-        self.update = {}
 
 @bt2.plugin_component_class
 class EventBufferSink(bt2._UserSinkComponent):
@@ -79,6 +32,9 @@ class EventBufferSink(bt2._UserSinkComponent):
     def __init__(self, config, params, obj):
         self._port = self._add_input_port("in")
         (self._tableModel, self._treeModel) = obj
+
+        # event id -> model update handler
+        self._update = {}
 
     def _user_graph_is_configured(self):
         self._it = self._create_message_iterator(self._port)
@@ -209,11 +165,16 @@ class EventBufferSink(bt2._UserSinkComponent):
             for event_class in msg.stream.cls.values():
 
                 # Parse field classes + attach update handlers recursively
-                def parse_field_class(parent_item, child_class, child_columns): # add wrapper_handler - do that the parent can affect the childs handler - it gets the childs handler as an argument
+                def parse_field_class(parent_item, child_class, child_columns):
 
-                    class_item = parent_item.appendItem(child_columns)
+                    # Create QStandardItem objects for columns and make them available as attributes of first column
+                    # (which is also the node of this level)
+                    (class_item, class_item.type, class_item.count, class_item.last_value) = column_items = [
+                        QStandardItem(column) for column in child_columns
+                    ]
+                    parent_item.appendRow(column_items)
 
-                    if any([issubclass(type(child_class), c) for c in (
+                    if any([issubclass(type(child_class), cls) for cls in (
                         field_class._BoolFieldClassConst,
                         field_class._BitArrayFieldClassConst,
                         field_class._IntegerFieldClassConst,
@@ -222,7 +183,7 @@ class EventBufferSink(bt2._UserSinkComponent):
                     )]):
                         def update_scalar(payload):
                             # No need to bind item via default argument, since we go out of the outer scope
-                            class_item.setValue(str(payload))
+                            class_item.last_value.setText(str(payload))
                             return None  # No subelements, so no update view handler
                         return (class_item, update_scalar)
 
@@ -237,7 +198,7 @@ class EventBufferSink(bt2._UserSinkComponent):
                             )
 
                         def update_enum(payload):
-                            class_item.setValue(str(payload)) # TODO
+                            class_item.last_value.setText(str(payload)) # TODO
                         return (class_item, update_enum)
 
                     elif type(child_class) == field_class._ArrayFieldClass:
@@ -245,7 +206,7 @@ class EventBufferSink(bt2._UserSinkComponent):
                         # children -> array elements
                         # In case of dynamic arrays, the number of children can change! (Tree is modified!)
                         def update_array(payload):
-                            class_item.setValue(str(payload)) # TODO
+                            class_item.last_value.setText(str(payload)) # TODO
                         return (class_item, update_array)
 
                     elif type(child_class) == field_class._StructureFieldClassConst:
@@ -265,7 +226,7 @@ class EventBufferSink(bt2._UserSinkComponent):
 
                         def update_struct(payload):
                             # Update in-line info for container
-                            class_item.setValue(str(payload))
+                            class_item.last_value.setText(str(payload))
                             # Update members
                             for shp in zip(sub_handler, payload.values()):
                                 shp[0](shp[1]) # sub handler for payload member ( payload member instance )
@@ -275,14 +236,14 @@ class EventBufferSink(bt2._UserSinkComponent):
                         # item   -> option enabled
                         # child  -> option data struct, with values displayed if enabled
                         def update_option(payload):
-                            class_item.setValue(str(payload)) # TODO
+                            class_item.last_value.setText(str(payload)) # TODO
                         return (class_item, update_option)
 
                     elif type(child_class) == field_class._VariantFieldClassConst:
                         # item      -> data struct selection
                         # children  -> all variant data structs, selected one has values displayed
                         def update_variant(payload):
-                            class_item.setValue(str(payload)) # TODO
+                            class_item.last_value.setText(str(payload)) # TODO
                         return (class_item, update_variant)
 
                     else:
@@ -290,9 +251,9 @@ class EventBufferSink(bt2._UserSinkComponent):
 
                 # Attach update handler from the child to parent, so that the parent can call it
                 (item, update_handler) = parse_field_class(
-                    self._treeModel.rootItem, event_class.payload_field_class,
-                    # "Name",                               "Type",                                      "Count", "Last Value"
-                    [f"{event_class.id} {event_class.name}", type(event_class.payload_field_class)._NAME, 0,        '-']
+                    self._treeModel.invisibleRootItem(), event_class.payload_field_class,
+                    # "Name",                                  "Type",                                      "Count", "Last Value"
+                    [f"{event_class.id} : {event_class.name}", type(event_class.payload_field_class)._NAME, 0,        '-']
                 )
 
                 # Augment the payload handler with counting functionality
@@ -300,13 +261,14 @@ class EventBufferSink(bt2._UserSinkComponent):
                 #
                 # We need to bind the current iteration's item / update_handler objects via default arguments,
                 # since we remain in the same outer scope during for loop iterations.
+                item.count_value = 0
                 def update_event_class(payload, item=item, update_handler=update_handler):
+                    item.count_value += 1
+                    item.count.setText(str(item.count_value))
 
-                    item.setCount(item.getCount()+1)
                     update_handler(payload)
 
-                # Add update handler for event class as closure
-                self._treeModel.update[event_class.id] = update_event_class
+                self._update[event_class.id] = update_event_class
 
             # Notify view that the _treeModel changed
             self._treeModel.modelReset.emit()
@@ -314,7 +276,7 @@ class EventBufferSink(bt2._UserSinkComponent):
         if type(msg) == bt2._EventMessageConst:
             # Save event to buffer
             self._tableModel.append((msg.default_clock_snapshot.value, msg.event.name, str(msg.event.payload_field)))
-            self._treeModel.update[msg.event.id](msg.event.payload_field)
+            self._update[msg.event.id](msg.event.payload_field)
 
 # MainWindow
 #
@@ -410,7 +372,8 @@ def main():
 
     # Data models
     tableModel = AppendableTableModel(('Timestamp', 'Event', 'Payload'))
-    treeModel = EventClassTreeModel(("Name", "Type", "Count", "Last Value"))
+    treeModel = QStandardItemModel()
+    treeModel.setHorizontalHeaderLabels(("Name", "Type", "Count", "Last Value"))
 
     # Create graph and add components
     graph = bt2.Graph()
