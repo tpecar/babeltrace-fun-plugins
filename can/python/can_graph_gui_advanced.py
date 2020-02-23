@@ -80,13 +80,44 @@ class EventBufferSink(bt2._UserSinkComponent):
             #       list(msg.event.payload_field.values())[0] ---------------->  _[X]FieldConst
             #                                                                     defined @ field.py:
             #                                                                    _FIELD_CLASS_TYPE_TO_OBJ
-            #
-            # ---------------------------------------------------------------------------------------------------------
-            #
             # How the tree model + view update handlers are built:
             #
-            # ---
-            # The following requires a sound understanding of python closures and since people usually stop at
+            # for event_class in msg.stream.cls.values()
+            #  |- calls parse_field_class(for toplevel field class, tree root node)
+            #      |
+            #      -> parse_field_class(current field class, parent tree node)
+            #      '   |- creates the class_item tree node for current field class & appends it to parent tree node
+            #      '   |- depending on the type of field class
+            #      '   '   |- starts traversal of any sub-field classes by
+            #      '   '   '  calling parse_field_class(sub-field class, class_item)
+            #      '   '   '   |
+            #      '   '   '   -> parse_field_class(...)
+            #      '   '   '         - [recursive operation]
+            #      '   '   |<------- - returns (tree node for sub-field class, payload handler for sub-field class)
+            #      '   '   |
+            #      '   '   | (the sub-field payload handlers are stored)
+            #      '   '   |
+            #      '   '   |- creates payload handler for current field class, which will later, at the time of call,
+            #      '   '   '  be provided with the payload field which corresponds to the field class at the time of
+            #      '   '   '  handler creation in parse_field_class(...)
+            #      '   '   '  The payload handler
+            #      '   '   '   |- updates the tree node of the current field class
+            #      '   '   '   |  (+ notifies the view, done internally by QStandardItem)
+            #      '   '   '   |- unpacks the current payload field into sub-fields and
+            #      '   '   '   |- calls corresponding sub-field handlers for the unpacked sub-fields
+            #      '   '   '
+            #  |<----------|- returns the (class_item tree node, payload handler)
+            #  |
+            #  |- on event_class level only, augments the retrieved payload handler by defining a new handler,
+            #  |  which
+            #  |   |- handles event counting functionality (increments counter + updates the Count column)
+            #  |   |- calls the retrieved payload handler
+            #  |
+            #  |- stores the new payload handler in an [event.id]-indexed dict, which will be later used to call the
+            #     appropriate payload handler for a retrieved message in the _EventMessageConst stage
+            #
+            #
+            # The following code requires a sound understanding of python closures and since people usually stop at
             # "closures in python are late binding", I want to elaborate on this:
             #
             #   When you define a function / lambda *in* a function, and the defined, *inner* function uses a variable
@@ -108,39 +139,6 @@ class EventBufferSink(bt2._UserSinkComponent):
             #   https://stackoverflow.com/questions/12919278/how-to-define-free-variable-in-python
             #   https://www.python.org/dev/peps/pep-0227/
             #   https://gist.github.com/DmitrySoshnikov/700292
-            # ---
-            #
-            # for event_class in msg.stream.cls.values()
-            #   - calls parse_field_class(for toplevel field class, tree root node)
-            #
-            #       -> parse_field_class(current field class, parent tree node)
-            #               - creates the class_item tree node for current field class
-            #                 & appends it to parent tree node
-            #               - depending on the type of field class
-            #                   - starts traversal of any sub-field classes by
-            #                     calling parse_field_class(sub-field class, class_item)
-            #
-            #                           -> parse_field_class(...)
-            #                               - [recursive operation]
-            #                           <-  - returns (tree node for sub-field class, payload handler for sub-field class)
-            #
-            #                   (the sub-field payload handlers are stored)
-            #
-            #                   - creates payload handler for current field class, which will later, at the time of its call,
-            #                     be provided with the payload field which corresponds to the field class at the time of
-            #                     handler creation in parse_field_class(...)
-            #                     The payload handler
-            #                           - updates the tree node of the current field class
-            #                             (+ notifies the view, done internally by QStandardItem)
-            #                           - unpacks the current payload field into sub-fields and
-            #                           - calls corresponding sub-field handlers for the unpacked sub-fields
-            #              <- returns the (class_item tree node, payload handler)
-            #
-            #   - on event_class level only, augments the retrieved payload handler by defining a new handler, which
-            #           - handles event counting functionality (increments counter + updates the Count column)
-            #           - calls the retrieved payload handler
-            #   - stores the new payload handler in an [event.id]-indexed dict, which will be later used to call the
-            #     appropriate payload handler for a retrieved message in the _EventMessageConst stage
 
             # Parse event classes
             for event_class in msg.stream.cls.values():
@@ -243,7 +241,6 @@ class EventBufferSink(bt2._UserSinkComponent):
                     else:
                         print(f"{type(child_class)} not handled!")
 
-                # Attach update handler from the child to parent, so that the parent can call it
                 (item, update_handler) = parse_field_class(
                     self._treeModel.invisibleRootItem(), event_class.payload_field_class,
                     # "Name",                                  "Type",                                          "Count", "Last Value"
@@ -381,8 +378,6 @@ def main():
        })
     )
 
-    # Do note: event_signal is static, but it has to be accessed through instance
-    # (via self.) in order to be "bound" (expose the .emit() method)
     graph_sink = graph.add_component(EventBufferSink, 'sink', obj=(tableModel, treeModel))
 
     # Connect components together
@@ -390,7 +385,6 @@ def main():
         list(graph_source.output_ports.values())[0],
         list(graph_sink.input_ports.values())[0]
     )
-
 
     # Main window
     mainWindow = MainWindow(tableModel, treeModel)
