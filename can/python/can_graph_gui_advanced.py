@@ -19,7 +19,7 @@ from PyQt5.Qt import *
 from PyQt5.QtWidgets import *
 
 # import local modules
-from graph.event_buffer import AppendableTableModel
+from graph.model import AppendableTableModel
 from graph.utils import load_plugins, cmd_parser
 
 
