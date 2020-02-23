@@ -156,7 +156,7 @@ class EventBufferSink(bt2._UserSinkComponent):
                     # Set monospaced font for "last_value" column, for easier value comparison
                     class_item.last_value.setFont(QFont("Monospace"))
 
-                    if any([issubclass(type(child_class), cls) for cls in (
+                    if any([type(child_class) == cls for cls in (
                         field_class._BoolFieldClassConst,
                         field_class._BitArrayFieldClassConst,
                         field_class._StringFieldClassConst
