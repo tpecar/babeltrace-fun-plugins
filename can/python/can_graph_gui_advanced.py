@@ -69,56 +69,10 @@ class EventBufferSink(bt2._UserSinkComponent):
             #       static void write_event_class(struct details_write_ctx *ctx, const bt_event_class *ec) definition
             #       static void write_field_class(struct details_write_ctx *ctx, const bt_field_class *fc) definition
             #
-            # The general idea:                Notation: (  is a field_class.py : _FIELD_CLASS_TYPE_TO_CONST_OBJ )
-            #                                            [[ is an abc.Mapping ]]
-            #   event_class ( _EventClassConst )
-            #        |
-            #    has ---> payload_field_class ( _[X]FieldClass )    <------------------------------------------------ <
-            #               |                                                                                         |
-            #            is |---> scalar field type                                                                   |
-            #               |        |                                                                                |
-            #               | can be | ---> Boolean           ( _BoolFieldClassConst )                                |
-            #               |        |                                                                                |
-            #               |        OR --> Bit array         ( _BitArrayFieldClassConst )                            |
-            #               |        |                                                                                |
-            #               |        OR --> Integer           ( _UnsignedIntegerFieldClassConst )                     |
-            #               |        |                        ( _SignedIntegerFieldClassConst )                       |
-            #               |        |                                                                                |
-            #               OR       OR --> [[ Enumeration ]] ( _UnsignedEnumerationFieldClassConst )                 |
-            #               |        |            |           ( _SignedEnumerationFieldClassConst )                   |
-            #               |        |        has ---> (?)                                                            |
-            #               |        |                                                                                |
-            #               |        OR --> Real              ( _SinglePrecisionRealFieldClassConst )                 ^
-            #               |        |                        ( _DoublePrecisionRealFieldClassConst )                 |
-            #               |        |                                                                                |
-            #               |        OR --> String            ( _StringFieldClassConst )                              |
-            #               |                                                                                         |
-            #               |                                                                                         |
-            #               ----> container field type                                                                |
-            #                        |                                                                                |
-            #                 can be | ---> Array             ( _StaticArrayFieldClassConst )                         |
-            #                        |                        ( _DynamicArrayFieldClassConst )                        |
-            #                        |                        ( _DynamicArrayWithLengthFieldFieldClassConst )         |
-            #                        |                                                                                |
-            #                        OR --> [[ Structure ]]   ( _StructureFieldClassConst )                           |
-            #                        |            |                                                                   |
-            #                        |        has ---> _StructureFieldClassMember                                     |
-            #                        |                      |                                                         |
-            #                        |                  has ---> field_class ( _[X]FieldClass ) --->----------------- ^
-            #                        |
-            #                        OR --> Option            ( _OptionFieldClassConst )
-            #                        |         |              ( _OptionWithBoolSelectorFieldClassConst )
-            #                        |     has ---> (?)       ( _OptionWithUnsignedIntegerSelectorFieldClassConst )
-            #                        |                        ( _OptionWithSignedIntegerSelectorFieldClassConst )
-            #                        |
-            #                        OR --> [[ Variant ]]     ( _VariantFieldClassWithoutSelector )
-            #                                     |           ( _VariantFieldClassWithUnsignedIntegerSelectorConst )
-            #                                     |           ( _VariantFieldClassWithSignedIntegerSelectorConst )
-            #                                 has ---> (?)
             #
-            #   list(msg.stream.cls.values())[0] ----------------------------->  _EventClassConst
-            #                                                                     defined @ event_class.py
             #   if type(msg) == bt2._StreamBeginningMessageConst:
+            #       list(msg.stream.cls.values())[0] ------------------------->  _EventClassConst
+            #                                                                     defined @ event_class.py
             #       list(msg.stream.cls.values())[0].payload_field_class ----->  _[X]FieldClassConst
             #                                                                     defined @ field_class.py:
             #                                                                    _FIELD_CLASS_TYPE_TO_CONST_OBJ
@@ -130,36 +84,63 @@ class EventBufferSink(bt2._UserSinkComponent):
             # ---------------------------------------------------------------------------------------------------------
             #
             # How the tree model + view update handlers are built:
-            #   TODO
-            #   closures and all that jazz..
-            # ---------------------------------------------------------------------------------------------------------
             #
-            # Since people usually stop at "closures in python are late binding", with no explanation why,
-            # I want to elaborate on this:
+            # ---
+            # The following requires a sound understanding of python closures and since people usually stop at
+            # "closures in python are late binding", I want to elaborate on this:
             #
-            #   When you define a function / lambda that uses a variable from an outside scope,
-            #   (do note that in Python scope is function-level)
-            #   the variable from outside scope is a 'lexically bound free variable'
-            #   - it references (not copies!) the variable (not the object!) in the outer scope.
+            #   When you define a function / lambda *in* a function, and the defined, *inner* function uses a variable
+            #   from the *outer* function scope,
+            #   that variable is a 'lexically bound free variable' from the *inner* function's perspective, which
+            #   - references the variable (not the object the variable points to!) in the outer scope
+            #   - uses the value of the outer scope variable at the time of the call (not at the time of definition!)
+            #   - can outlive the outer scope
             #
-            #   A function
-            #       1. can outlive the scope of its free variables,
-            #       2. should, by design, use the value of the free variable at the time of the call
-            #          (not at the time of definition)
-            #   Python achieves both by storing the variable-to-object mapping (cell object) of the variable
-            #   in the __closure__ attribute of the defined function.
+            #   Python achieves this by storing the variable-to-object mapping (cell object) of the variable
+            #   in the __closure__ property of the defined function.
             #
-            #   Consequentially, all functions that use the same out-of-scope variable will have the same
-            #   variable-to-object mapping, which means that
-            #       - the variable will reference the same object in all functions
-            #       - the assignment to the variable in the original scope
-            #         (but not in functions / sub-scopes, since that just shadows the outer scope variable),
-            #         will be visible in all functions
+            #   Functions defined in the same outer scope share the *same* cell object for the same variables.
+            #
+            #   If the variable in the outer scope is made unavailable because the outer scope is closed or shadowed
+            #   (the latter happens during a recursive call), a new, separate cell object is created.
             #
             # More info:
             #   https://stackoverflow.com/questions/12919278/how-to-define-free-variable-in-python
             #   https://www.python.org/dev/peps/pep-0227/
+            #   https://gist.github.com/DmitrySoshnikov/700292
+            # ---
             #
+            # for event_class in msg.stream.cls.values()
+            #   - calls parse_field_class(for toplevel field class, tree root node)
+            #
+            #       -> parse_field_class(current field class, parent tree node)
+            #               - creates the class_item tree node for current field class
+            #                 & appends it to parent tree node
+            #               - depending on the type of field class
+            #                   - starts traversal of any sub-field classes by
+            #                     calling parse_field_class(sub-field class, class_item)
+            #
+            #                           -> parse_field_class(...)
+            #                               - [recursive operation]
+            #                           <-  - returns (tree node for sub-field class, payload handler for sub-field class)
+            #
+            #                   (the sub-field payload handlers are stored)
+            #
+            #                   - creates payload handler for current field class, which will later, at the time of its call,
+            #                     be provided with the payload field which corresponds to the field class at the time of
+            #                     handler creation in parse_field_class(...)
+            #                     The payload handler
+            #                           - updates the tree node of the current field class
+            #                             (+ notifies the view, done internally by QStandardItem)
+            #                           - unpacks the current payload field into sub-fields and
+            #                           - calls corresponding sub-field handlers for the unpacked sub-fields
+            #              <- returns the (class_item tree node, payload handler)
+            #
+            #   - on event_class level only, augments the retrieved payload handler by defining a new handler, which
+            #           - handles event counting functionality (increments counter + updates the Count column)
+            #           - calls the retrieved payload handler
+            #   - stores the new payload handler in an [event.id]-indexed dict, which will be later used to call the
+            #     appropriate payload handler for a retrieved message in the _EventMessageConst stage
 
             # Parse event classes
             for event_class in msg.stream.cls.values():
