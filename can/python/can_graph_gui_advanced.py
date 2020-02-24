@@ -117,7 +117,7 @@ class EventBufferSink(bt2._UserSinkComponent):
             #     appropriate payload handler for a retrieved message in the _EventMessageConst stage
             #
             #
-            # The following code requires a sound understanding of python closures and since people usually stop at
+            # The following code requires a solid understanding of python closures and since people usually stop at
             # "closures in python are late binding", I want to elaborate on this:
             #
             #   When you define a function / lambda *in* a function, and the defined, *inner* function uses a variable
@@ -164,7 +164,7 @@ class EventBufferSink(bt2._UserSinkComponent):
                         def update_scalar(payload):
                             # No need to bind item via default argument, since we go out of the outer scope
                             class_item.last_value.setText(str(payload))
-                            return None  # No subelements, so no update view handler
+                            return None  # No subelements, so no update view handler calls
                         return (class_item, update_scalar)
 
                     elif issubclass(type(child_class), field_class._IntegerFieldClassConst):
@@ -181,7 +181,7 @@ class EventBufferSink(bt2._UserSinkComponent):
 
                     elif type(child_class) == field_class._EnumerationFieldClassConst:
                         # item     -> enum current state
-                        # children -> fixed value, possible enum states
+                        # children -> all enum states (name, value)
                         for member in child_class.values():
                             parse_field_class(
                                 class_item, member.field_class,
@@ -194,7 +194,7 @@ class EventBufferSink(bt2._UserSinkComponent):
                         return (class_item, update_enum)
 
                     elif type(child_class) == field_class._ArrayFieldClass:
-                        # item     -> length, (checksum ?)
+                        # item     -> length, in-line state
                         # children -> array elements
                         # In case of dynamic arrays, the number of children can change! (Tree is modified!)
                         def update_array(payload):
@@ -202,7 +202,7 @@ class EventBufferSink(bt2._UserSinkComponent):
                         return (class_item, update_array)
 
                     elif type(child_class) == field_class._StructureFieldClassConst:
-                        # item      -> (checksum ?)
+                        # item      -> in-line state
                         # children  -> structure elements
 
                         sub_handler = []
@@ -225,15 +225,15 @@ class EventBufferSink(bt2._UserSinkComponent):
                         return (class_item, update_struct)
 
                     elif type(child_class) == field_class._OptionFieldClassConst:
-                        # item   -> option enabled
+                        # item   -> option enabled flag, in-line state
                         # child  -> option data struct, with values displayed if enabled
                         def update_option(payload):
                             class_item.last_value.setText(str(payload)) # TODO
                         return (class_item, update_option)
 
                     elif type(child_class) == field_class._VariantFieldClassConst:
-                        # item      -> data struct selection
-                        # children  -> all variant data structs, selected one has values displayed
+                        # item      -> selector, selected data struct, in-line state
+                        # children  -> all possible data structs, selected one has values displayed
                         def update_variant(payload):
                             class_item.last_value.setText(str(payload)) # TODO
                         return (class_item, update_variant)
@@ -245,7 +245,7 @@ class EventBufferSink(bt2._UserSinkComponent):
                     self._treeModel.invisibleRootItem(), event_class.payload_field_class,
                     # "Name",                                  "Type",                                          "Count", "Last Value"
                     [f"{event_class.id} : {event_class.name}", type(event_class.payload_field_class)._NAME[6:], '0',     '-']
-                    # Do note that for "Type", we actually strip the "Const" prefix to shorten the column
+                    # Do note that for "Type", we actually strip the "Const" prefix off _NAME to keep the column short
                 )
 
                 # Augment the payload handler with counting functionality
@@ -293,7 +293,7 @@ class MainWindow(QMainWindow):
         self._treeView = QTreeView()
         self._treeView.setModel(self._treeModel)
         self._treeModel.modelReset.connect(self._treeViewModelReset)
-        self._treeView.setUniformRowHeights(True)  # https://doc.qt.io/qt-5/qtreeview.html#uniformRowHeights-prop
+        self._treeView.header().setSectionsMovable(False)
         self._treeView.header().setSectionResizeMode(QHeaderView.ResizeToContents) # Resize automatically (used @ init)
 
         # Statistics label
@@ -337,7 +337,6 @@ class MainWindow(QMainWindow):
         # Pre-set up column width to fit all sub-item content + prevent the user from moving/resizing columns
         self._treeView.expandAll()
         self._treeView.header().setSectionResizeMode(QHeaderView.Fixed)
-        self._treeView.header().setSectionsMovable(False)
         self._treeView.collapseAll()
 
     # Timer handler, provided by QObject
@@ -364,6 +363,7 @@ def main():
 
     # Data models
     tableModel = AppendableTableModel(('Timestamp', 'Event', 'Payload'))
+
     treeModel = QStandardItemModel()
     treeModel.setHorizontalHeaderLabels(("Name", "Type", "Count", "Last Value"))
 
@@ -405,7 +405,7 @@ def main():
 
     # Start GUI event loop
     mainWindow.show()
-    mainWindow.startTimer(100) # Update stats & refresh interval in ms
+    mainWindow.startTimer(100)  # Update stats & table refresh interval in ms
 
     app.exec_()
     print("Done.")

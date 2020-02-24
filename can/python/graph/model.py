@@ -1,8 +1,7 @@
 """
-Set of building blocks that store BT2 messages in a fast buffer, and display them in a Qt application with lazy loading.
+Custom data models, intended to be filled by BT2 sinks, and displayed in Qt Views.
+https://doc.qt.io/qt-5/model-view-programming.html
 """
-
-import numpy as np
 
 from PyQt5.Qt import Qt, QAbstractTableModel, QModelIndex
 

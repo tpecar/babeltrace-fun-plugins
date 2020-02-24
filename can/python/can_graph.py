@@ -31,12 +31,8 @@ def graph_can_detail():
 
     source = plugins['can'].source_component_classes['CANSource']
     graph_source = graph.add_component(source, 'test_source',
-        # The plugin is actually capable of reading from multiple (list)
-        # input and database files
-        #
-        # For the sake of simplicity, this script only supplies ONE
-        # input and database file.
-        #
+        # The plugin is actually capable of reading from multiple (list) input and database files.
+        # For the sake of simplicity, this script only supplies ONE input and database file.
         params=bt2.MapValue({
             'inputs' : bt2.ArrayValue([CANSource_data_path]),
             'databases' : bt2.ArrayValue([CANSource_dbc_path])
@@ -48,12 +44,10 @@ def graph_can_detail():
 
     # Connect components together
 
-    # Do note that that input/output ports can be arbitrarily named
-    # The bt_plugin_can.CANSource uses the input file path for port name
+    # Do note that that input/output ports can be arbitrarily named - the bt_plugin_can.CANSource uses
+    # the input file path for port name.
     #
-    # So we will ignore the port name and connect the first available port
-    # from the component
-    #
+    # So we will ignore the port name and connect the first available port from the component.
     graph.connect_ports(
         list(graph_source.output_ports.values())[0],
         list(graph_sink.input_ports.values())[0]
@@ -75,12 +69,6 @@ def graph_can_user_detail():
 
     source = plugins['can'].source_component_classes['CANSource']
     graph_source = graph.add_component(source, 'test_source',
-        # The plugin is actually capable of reading from multiple (list)
-        # input and database files
-        #
-        # For the sake of simplicity, this script only supplies ONE
-        # input and database file.
-        #
         params=bt2.MapValue({
             'inputs' : bt2.ArrayValue([CANSource_data_path]),
             'databases' : bt2.ArrayValue([CANSource_dbc_path])
@@ -111,15 +99,20 @@ def graph_can_user_detail():
             #
             # More info:
             #
+            # Common Trace Format (CTF) documentation
+            #   https://diamon.org/ctf/
+            #
             # C documentation for Stream / Event / Field classes
             #   https://babeltrace.org/docs/v2.0/libbabeltrace2/group__api-tir-stream-cls.html
             #   https://babeltrace.org/docs/v2.0/libbabeltrace2/group__api-tir-ev-cls.html
             #   https://babeltrace.org/docs/v2.0/libbabeltrace2/group__api-tir-ev-cls.html#api-tir-ev-cls-prop-p-fc
             #   https://babeltrace.org/docs/v2.0/libbabeltrace2/group__api-tir-fc.html
             #
-            # Python wrapper
+            # Python bindings
             #   babeltrace-2.0.0/src/bindings/python/bt2/bt2/stream_class.py
             #   babeltrace-2.0.0/src/bindings/python/bt2/bt2/field_class.py
+            #   babeltrace-2.0.0/src/bindings/python/bt2/bt2/field.py
+            #   babeltrace-2.0.0/tests/bindings/python/bt2/test_field.py
             #
             # text.details sink source
             #   babeltrace-2.0.0/src/plugins/text/details/write.c
@@ -133,15 +126,16 @@ def graph_can_user_detail():
                 # Parse event classes
                 for event_class in msg.stream.cls.values():
                     # Parse field classes recursively
-                    def parse_container(container, name, level=0):
-                        print(f"{' ' * (5 * level)}{name} : {type(container)._NAME}")
+                    def parse_field_class(field_class, name, level=0):
+                        print(f"{' ' * (5 * level)}{name} : {type(field_class)._NAME}")
 
-                        # If member is a container type, iterate over it
-                        if issubclass(type(container), collections.abc.Mapping):
-                            for member in container.values():
-                                parse_container(member.field_class, member.name, level + 1)
+                        # If the field class has sub-fields, iterate over them
+                        if issubclass(type(field_class), collections.abc.Mapping):
+                            for member in field_class.values():
+                                # Recursively parse sub-field
+                                parse_field_class(member.field_class, member.name, level + 1)
 
-                    parse_container(event_class.payload_field_class, f"{event_class.id:3}: {event_class.name}")
+                    parse_field_class(event_class.payload_field_class, f"{event_class.id:3}: {event_class.name}")
                     print()
 
             def EventMessage_parser():
@@ -152,11 +146,10 @@ def graph_can_user_detail():
                     f"{str(msg.event.payload_field)}"
                 )
 
-            # I'm not sorry for this
             try:
                 {
-                    bt2._StreamBeginningMessageConst    : StreamBeginningMessage_parser,
-                    bt2._EventMessageConst              : EventMessage_parser
+                    bt2._StreamBeginningMessageConst : StreamBeginningMessage_parser,
+                    bt2._EventMessageConst : EventMessage_parser
                 }[type(msg)]()
             except KeyError:
                 print_msg()
@@ -195,7 +188,7 @@ def graph_can_ctf():
     sink = plugins['ctf'].sink_component_classes['fs']
     graph_sink = graph.add_component(sink, 'test_sink',
         params=bt2.MapValue({
-            'path': './ctf-full'
+            'path' : './ctf-full'
         })
     )
 
@@ -241,14 +234,14 @@ def graph_can_filter_ctf():
     graph_filter = graph.add_component(filter, 'test_filter',
         params=bt2.MapValue({
             'begin' : '0.000',
-            'end' : '1000.000'
+            'end' : '100.000'
         })
     )
 
     sink = plugins['ctf'].sink_component_classes['fs']
     graph_sink = graph.add_component(sink, 'test_sink',
         params=bt2.MapValue({
-            'path': './ctf-filtered'
+            'path' : './ctf-filtered'
         })
     )
 
